@@ -97,7 +97,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body className="flex min-h-svh flex-col bg-navy font-sans text-ink antialiased">
         <RootProvider
           theme={{ defaultTheme: 'dark', forcedTheme: 'dark' }}
-          search={{ options: { type: 'static' } }}
+          search={{ options: { type: 'static', api: '/api/search.json' } }}
         >
           {children}
         </RootProvider>
