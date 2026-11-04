@@ -48,6 +48,6 @@ A push to `main` deploys with `.github/workflows/deploy.yml`. A pull request onl
 | `CLOUDFLARE_API_TOKEN` | A token with Account > Workers Scripts: Edit, and Zone > Workers Routes: Edit on `clowk.in` |
 | `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account id |
 
-The route `anway.clowk.in/*` needs a proxied DNS record for `anway.clowk.in` in the `clowk.in` zone, for example `AAAA 100::`. See `wrangler.toml`.
+The route `anway.clowk.in/*` needs a proxied DNS record for `anway.clowk.in` in the `clowk.in` zone. The proxied wildcard record `*.clowk.in` covers it, and the route answers before the request reaches its target. See `wrangler.toml`.
 
 From a terminal: `pnpm deploy`.
