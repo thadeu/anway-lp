@@ -63,7 +63,7 @@
   --fd-layout-offset: 0px;
   --fd-page-width: var(--docs-content-width);
   min-height: 100dvh;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* On a phone the top bar of DocsSidebar is 56px tall. The page and the
