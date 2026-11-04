@@ -27,19 +27,23 @@ export function Console() {
         </div>
 
         <figure className="mt-12 overflow-hidden rounded-xs border border-line2 bg-deep">
-          <picture>
-            <source type="image/webp" srcSet="/screens/console-1400.webp 1400w, /screens/console-2576.webp 2576w" sizes="(min-width: 1152px) 1104px, 100vw" />
+          <a href="/screens/console-2576.webp" aria-label="Open the console screenshot at full size">
+            <picture>
+              <source type="image/webp" srcSet="/screens/console-1400.webp 1400w, /screens/console-2576.webp 2576w" sizes="(min-width: 1152px) 1104px, 100vw" />
 
-            <img
-              src="/screens/console-2576.webp"
-              alt="The Anway web console: job counts, a throughput chart with a threads line, queues, workers, and running jobs."
-              width={2576}
-              height={1266}
-              loading="lazy"
-              className="block h-auto w-full"
-            />
-          </picture>
+              <img
+                src="/screens/console-2576.webp"
+                alt="The Anway web console: job counts, a throughput chart with a threads line, queues, workers, and running jobs."
+                width={2576}
+                height={1266}
+                loading="lazy"
+                className="block h-auto w-full"
+              />
+            </picture>
+          </a>
         </figure>
+
+        <p className="mt-3 text-[13px] text-sub md:hidden">Tap the image to see it at full size.</p>
 
         <p className="mt-6 text-[15px] text-sub">
           <Link href="/docs/server/console" className="text-green underline-offset-4 hover:underline">

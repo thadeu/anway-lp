@@ -34,7 +34,7 @@ const ways: Way[] = [
 
 function WayColumn({ way }: { way: Way }) {
   return (
-    <div className="flex min-w-0 flex-col gap-4 rounded-xs border border-line bg-panel p-5 md:p-6">
+    <div className="flex min-w-0 flex-col gap-4 rounded-xs border border-line bg-panel p-4 sm:p-5 md:p-6">
       <h3 className="text-[17px] font-medium text-ink">{way.title}</h3>
 
       <p className="text-[15px] leading-relaxed text-sub">{way.text}</p>

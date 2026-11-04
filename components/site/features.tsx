@@ -66,7 +66,7 @@ export function Features() {
     <section className="border-t border-line">
       <div className="mx-auto w-full max-w-6xl px-4 py-20 md:px-6 md:py-28">
         <h2 className="max-w-2xl font-display text-[30px] font-semibold leading-tight tracking-[-0.03em] text-ink md:text-[40px]">
-          What the server does for you
+          Built into the server
         </h2>
 
         <div className="mt-12 grid grid-cols-1 gap-px overflow-hidden rounded-xs border border-line sm:grid-cols-2 lg:grid-cols-3">

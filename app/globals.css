@@ -151,3 +151,11 @@ body {
 .code-panel pre .line {
   padding-inline: 0;
 }
+
+/* code panels on a phone: a smaller font, so the longest lines fit */
+@media (max-width: 639px) {
+  .code-panel pre {
+    padding: 14px 14px;
+    font-size: 11px;
+  }
+}

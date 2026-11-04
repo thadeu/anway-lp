@@ -17,8 +17,13 @@ const panels: Panel[] = [
     lang: 'go',
     code: `opts := anway.PublishOptions{ID: order.ID}
 
-_, err := client.Publish(ctx, "order.paid",
-	[]any{order}, opts)
+_, err := client.Publish(
+	ctx,
+	"order.paid",
+	[]any{order},
+	opts,
+)
+
 if err != nil {
 	return err
 }
@@ -35,12 +40,15 @@ return nil`,
     code: `class SendReceipt
   include Anway::Worker
 
-  anway_options event: "receipt.send",
-                queue: "mailers",
-                topics: %w[order.paid]
+  anway_options(
+    queue: "mailers",
+    topics: %w[order.paid]
+  )
 
   def perform(order)
-    ReceiptMailer.paid(order).deliver_now
+    ReceiptMailer
+      .paid(order)
+      .deliver_now
   end
 end`,
   },
@@ -58,9 +66,13 @@ const subscribe = {
   topics: ['order.paid'],
 };
 
-worker.on('reports.order', async job => {
-  await reports.add(job.args[0]);
-}, subscribe);
+worker.on(
+  'reports.order',
+  async job => {
+    await reports.add(job.args[0]);
+  },
+  subscribe,
+);
 
 await worker.run();`,
   },

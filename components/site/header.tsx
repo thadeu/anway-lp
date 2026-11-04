@@ -49,33 +49,38 @@ export function Header() {
     hidden && !open ? '-translate-y-full' : 'translate-y-0',
   ].join(' ');
 
+  // The menu is a sibling of the header, not a child: the blur and the slide
+  // of the header make it the box of any fixed child, and the menu must cover
+  // the whole screen.
   return (
-    <header className={barClass}>
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 md:px-6">
-        <Link href="/" aria-label="Anway home" className="rounded-xs">
-          <Logo height={22} />
-        </Link>
-
-        <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
-          {links.map(link => (
-            <a key={link.href} href={link.href} className="rounded-xs px-3 py-2 text-[14px] text-sub hover:bg-panel2 hover:text-ink">
-              {link.label}
-            </a>
-          ))}
-
-          <Link
-            href="/docs/getting-started"
-            className="ml-2 rounded-xs bg-green px-3.5 py-2 text-[14px] font-medium text-navy hover:bg-[#5ce6aa]"
-          >
-            Get started
+    <>
+      <header className={barClass}>
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 md:px-6">
+          <Link href="/" aria-label="Anway home" className="rounded-xs">
+            <Logo height={22} />
           </Link>
-        </nav>
 
-        <MenuButton open={open} onToggle={() => setOpen(value => !value)} />
-      </div>
+          <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
+            {links.map(link => (
+              <a key={link.href} href={link.href} className="rounded-xs px-3 py-2 text-[14px] text-sub hover:bg-panel2 hover:text-ink">
+                {link.label}
+              </a>
+            ))}
+
+            <Link
+              href="/docs/getting-started"
+              className="ml-2 rounded-xs bg-green px-3.5 py-2 text-[14px] font-medium text-navy hover:bg-[#5ce6aa]"
+            >
+              Get started
+            </Link>
+          </nav>
+
+          <MenuButton open={open} onToggle={() => setOpen(value => !value)} />
+        </div>
+      </header>
 
       {open && <MobileMenu onClose={() => setOpen(false)} />}
-    </header>
+    </>
   );
 }
 
