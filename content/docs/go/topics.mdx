@@ -94,6 +94,31 @@ Use a stable id, such as the id of the record, when the same publish can run twi
 
 An event with no subscription is not lost. It goes to the Dead set as one job, and `Jobs` is 0. A requeue of that dead job publishes the event again to the subscriptions of that moment.
 
+### Publish in bulk
+
+`client.PublishBulk(ctx, events)` sends up to 1,000 events (`anway.MaxBulk`) with one `PUBLISHB` command. The server writes them in one write. It needs server v0.5.2 or later.
+
+```go
+events := make([]anway.Event, 0, len(items))
+
+for _, item := range items {
+	events = append(events, anway.Event{Topic: "product.created", Args: []any{item}, Options: anway.PublishOptions{ID: item.ID}})
+}
+
+results, err := client.PublishBulk(ctx, events)
+if err != nil {
+	return err
+}
+
+for _, result := range results {
+	if result.Error != "" {
+		log.Printf("event %s refused: %s", result.Event, result.Error)
+	}
+}
+```
+
+`PublishBulk` returns one `anway.PublishResult` for each event, in the same order. It has the fields of `Published`, and `Error` for a refused event. A refused event does not stop the others. More than 1,000 events return an error before the client sends them. See [Bulk publish](/docs/concepts/topics#bulk-publish).
+
 ### Idempotent handlers
 
 Each copy is delivered at least once. The server adds the event id to the custom hash of each copy, so use it as the key for idempotence:

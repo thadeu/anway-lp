@@ -101,6 +101,22 @@ Use a stable id, such as the id of the record, when the same publish can run twi
 
 An event with no subscription is not lost. It goes to the Dead set as one job, and the reply has `jobs: 0`. A requeue of that dead job publishes the event again to the subscriptions of that moment.
 
+### Publish in bulk
+
+`client.publishBulk(events)` sends up to 1,000 events with one `PUBLISHB` command. The server writes them in one write. Each event has `topic`, `args`, and the options of `publish`. It needs server v0.5.2 or later.
+
+```ts
+const results = await client.publishBulk(
+  products.map(product => ({ topic: 'product.created', args: [product], id: product.id }))
+);
+
+for (const result of results) {
+  if (result.error) console.warn(`event ${result.event} refused: ${result.error}`);
+}
+```
+
+`publishBulk` resolves with one result for each event, in the same order: `event`, `jobs`, `duplicate`, and `error` for a refused event. A refused event does not stop the others. More than 1,000 events throw a `RangeError` before the client sends them. See [Bulk publish](/docs/concepts/topics#bulk-publish).
+
 ### Idempotent handlers
 
 Each copy is delivered at least once. The server adds the event id to the custom hash of each copy, so use `job.custom.event` as the key for idempotence:

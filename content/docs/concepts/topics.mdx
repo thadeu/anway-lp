@@ -175,6 +175,53 @@ The reply has three fields:
 - `custom` goes to each copy. The server adds `topic` and `event` to it, so a handler knows which event it runs.
 - The server writes all copies in one transaction. After the reply, every copy survives `kill -9`. A crash before the reply leaves no copy.
 
+## Bulk publish
+
+To send many events, send them in one command. `PUBLISHB` takes up to 1,000 events, and the server writes all of them in one write. This is much faster than one `PUBLISH` for each event. It needs server v0.5.2 or later.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+results = Anway.publish_bulk(products.map { |p| { topic: 'product.created', args: [p.as_json], id: p.id.to_s } })
+
+results.reject(&:error).sum(&:jobs)
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+events := make([]anway.Event, 0, len(products))
+
+for _, p := range products {
+	events = append(events, anway.Event{Topic: "product.created", Args: []any{p}, Options: anway.PublishOptions{ID: p.ID}})
+}
+
+results, err := client.PublishBulk(ctx, events)
+if err != nil {
+	return err
+}
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const results = await client.publishBulk(products.map(p => ({ topic: 'product.created', args: [p], id: p.id })));
+
+const refused = results.filter(result => result.error);
+```
+
+</Tab>
+</Tabs>
+
+- Each event works as one `PUBLISH`: one copy for each subscription, dedup by `id`, and the Dead set for an event with no subscription. Two events with the same topic and id in the same call make one event, and the second has `duplicate: true`.
+- The reply has one result for each event, in the same order, with `event`, `jobs`, `duplicate`, and `error`.
+- A refused event, such as one with a bad topic name, has `error`. The other events of the call still go.
+- The limits are 1,000 events and 10,000 copies in one call. The server refuses a call above a limit, and writes no event of it.
+- `Anway.publish_bulk` in Ruby splits a longer list into calls of 1,000. In Go and Node.js, `PublishBulk` and `publishBulk` refuse more than 1,000 events, so split the list yourself.
+
 ## Dedup by event id
 
 Give each event an `id` to make a publish safe to repeat. A second publish of the same topic and id within `unique_for` seconds makes no job, and the reply has `duplicate: true`.

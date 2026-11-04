@@ -72,6 +72,7 @@ A worker can send these optional fields. The web console shows them, and the ser
 | `TRACK GET` | `jid` | Track JSON |
 | `TRACK SET` | `{"jid","percent","desc","reserve_until"}` | `OK` |
 | `PUBLISH` | `{"topic","args","id","unique_for","custom"}` | `{"event","jobs","duplicate"}` |
+| `PUBLISHB` | A JSON array of up to 1,000 `PUBLISH` arguments | A JSON array with one `{"event","jobs","duplicate","error"}` for each event, in the same order. See [Bulk publish](/docs/concepts/topics#bulk-publish). |
 | `SUBSCRIBE` | `{"topic","queue","jobtype","retry","reserve_for"}` | `OK` |
 | `UNSUBSCRIBE` | `{"topic","queue","jobtype"}` | `OK` |
 | `FLUSH` | None | `OK`. It deletes all data. It is off unless the server has `ALLOW_FLUSH=true`. |
@@ -113,7 +114,7 @@ Anway adds features only as new commands and optional fields. It does not change
 
 ### Topics
 
-`PUBLISH`, `SUBSCRIBE`, and `UNSUBSCRIBE`. See [Topics](/docs/concepts/topics).
+`PUBLISH`, `PUBLISHB`, `SUBSCRIBE`, and `UNSUBSCRIBE`. See [Topics](/docs/concepts/topics).
 
 ### Worker threads
 

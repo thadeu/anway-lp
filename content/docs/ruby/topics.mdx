@@ -107,6 +107,29 @@ Inside a database transaction, `Anway.publish` waits for the commit and returns 
 Anway.publish('chat.message', [{ 'body' => 'hi' }], id: 'msg-42', unique_for: 3600, custom: { 'source' => 'web' })
 ```
 
+### Publish in bulk
+
+```ruby
+Anway.publish_bulk(events)
+```
+
+`Anway.publish_bulk` sends many events with `PUBLISHB`, 1,000 in each command. The server writes each command in one write. Each event is a hash with `topic:` and `args:`, and the options of `publish`: `id:`, `unique_for:`, and `custom:`. It needs server v0.5.2 or later.
+
+```ruby
+results = Anway.publish_bulk(
+  products.map { |product| { topic: 'product.created', args: [product.as_json], id: product.id.to_s } }
+)
+
+results.select(&:error).each { |result| Rails.logger.warn("event #{result.event} refused: #{result.error}") }
+```
+
+- The reply is an array of `Anway::Client::PublishResult`, one for each event, in the same order, with `event`, `jobs`, `duplicate`, and `error`.
+- A refused event has `error`. The other events still go.
+- `Anway.client.publish_bulk` sends one command, and raises `ArgumentError` for more than 1,000 events.
+- In the test mode, each event is published as with `Anway.publish`.
+
+See [Bulk publish](/docs/concepts/topics#bulk-publish).
+
 ### Make the handler idempotent
 
 The server adds `topic` and `event` to the `custom` field of each copy. `event` is the event id. Use it as the key to skip an event that already ran:
