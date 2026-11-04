@@ -1,0 +1,57 @@
+---
+title: Faktory clients
+description: Connect an existing Faktory client to Anway, and know what differs.
+---
+
+Anway follows the public Faktory work protocol, version 2. An existing Faktory client can connect to Anway and run the core flow with no change: push, fetch, ack, fail, and beat. Use this to move a Faktory app to Anway step by step, or to use a language that has no Anway client yet.
+
+## Connect a Faktory client
+
+Point the client at the Anway server. The Anway server tests use the `FAKTORY_URL` env var for the Faktory clients:
+
+```bash
+export FAKTORY_URL=tcp://:change-me@localhost:7419
+```
+
+Anway uses the same default port, 7419, and the same password handshake.
+
+## Tested clients
+
+The server repository runs a test ring with these Faktory clients. Each one pushes a job that the next one runs, and each one fails a job, which goes to the Retries set.
+
+| Language | Package |
+|---|---|
+| Go | `github.com/contribsys/faktory` (v1.10.0 in the test) |
+| Ruby | `faktory_worker_ruby` |
+| Node.js | `faktory-worker` (^4.7.0 in the test), also on Bun |
+
+## Anway behavior to know
+
+These points come from the Anway server. Check them against the behavior that your app expects.
+
+| Topic | Anway |
+|---|---|
+| Storage | Jobs stay on disk in one embedded data file. There is no Redis. |
+| Retry delay | `count^4 + 15 + random(0..30) * (count + 1)` seconds. The formula is an Anway choice. See [Retries](/docs/concepts/retries#backoff). |
+| `MUTATE` filter | `regexp` is a glob with `*` and `?`, matched against the job JSON. |
+| `args: null` | The server changes it to `[]`. |
+| `FLUSH` | Off unless the server has `ALLOW_FLUSH=true`. |
+| Server shutdown | The server does not send `quiet` or `terminate` for its own shutdown. It stops giving out jobs, and lets running jobs send `ACK` or `FAIL`. Workers reconnect when the server comes back. `quiet` and `terminate` are only for an operator who stops workers. |
+| Batch status | `complete_st` and `success_st` are blank, `1` (fired), or `2` (finished). These values are an Anway choice. |
+| `INFO` | The reply has the `server` and `faktory` hashes. |
+
+## What a Faktory client does not get
+
+Anway adds features only as new commands and optional fields. A Faktory client that does not send them works as before, but it does not get these features:
+
+- **Autoscale.** A Faktory client does not send its thread count in `BEAT`, so the server never changes its threads. The HTTP API answers `409` for it, and the web console shows it as not scalable. See [Autoscale](/docs/concepts/autoscale).
+- **Topics.** `PUBLISH`, `SUBSCRIBE`, and `UNSUBSCRIBE` are Anway commands. A Faktory client can still run the copies of an event, because each copy is a normal job in a queue. The web console Topics page shows a Faktory worker that fetches from a subscription queue: the server learns its queues from its first `FETCH`.
+- **The input contract.** The Anway clients share one set of option names, such as `unique_for` and `on_dead`, and translate them to wire fields. With a Faktory client, set the wire fields yourself, for example `custom.unique_for`. See [Versions](/docs/reference/versions#input-contract).
+
+## The Anway clients
+
+The Anway clients read `ANWAY_URL`, not `FAKTORY_URL`. They support all the Anway features:
+
+- Ruby: the `anway` gem. See [Ruby](/docs/ruby).
+- Go: the `github.com/thadeu/anway-go` module. See [Go](/docs/go).
+- Node.js and Bun: the `@anway/client` package. See [Node.js](/docs/nodejs).

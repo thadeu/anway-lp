@@ -1,0 +1,177 @@
+---
+title: Install
+description: Get the Anway server and the client for your language.
+---
+
+Anway has two parts: one server, and a client library in each app. This page shows each way to get the server, and how to install each client.
+
+The current release is 0.5.1. The server and the official clients have the same version number. See [Versions](/docs/reference/versions).
+
+## Server
+
+The server is one static binary. It needs no Redis and no database. Choose one of these ways to get it:
+
+| Way | Use it when |
+|---|---|
+| [Release binary](#release-binary) | You run the server on a Linux or macOS host. |
+| [Docker image](#docker-image) | You run containers. |
+| [Ruby platform gem](#ruby-platform-gem) | A Ruby or Rails app runs the server next to its workers. |
+| [Build from source](#build-from-source) | You change the server. |
+
+### Release binary
+
+Each release on [GitHub](https://github.com/thadeu/anway/releases) has one archive for each platform:
+
+| Platform | Archive |
+|---|---|
+| Linux, x86-64 | `anway-v0.5.1-linux-amd64.tar.gz` |
+| Linux, arm64 | `anway-v0.5.1-linux-arm64.tar.gz` |
+| macOS, Intel | `anway-v0.5.1-darwin-amd64.tar.gz` |
+| macOS, Apple silicon | `anway-v0.5.1-darwin-arm64.tar.gz` |
+
+Each archive has a folder with the same name. The folder holds the `anway` binary, `LICENSE`, and `README.md`. The file `checksums.txt` in the release has the SHA-256 sum of each archive.
+
+Download the archive and the checksums, check the sum, and extract the binary:
+
+```bash
+name=anway-v0.5.1-linux-amd64
+base=https://github.com/thadeu/anway/releases/download/v0.5.1
+
+curl -fsSLO "$base/$name.tar.gz"
+curl -fsSLO "$base/checksums.txt"
+
+grep " $name.tar.gz\$" checksums.txt | sha256sum -c -
+
+tar -xzf "$name.tar.gz"
+
+./$name/anway --version
+```
+
+The last command prints `anway 0.5.1`. Move the binary to a folder in your `PATH`, such as `/usr/local/bin`.
+
+There is no Windows binary.
+
+### Docker image
+
+The image is `ghcr.io/thadeu/anway`, for `linux/amd64` and `linux/arm64`.
+
+```bash
+docker pull ghcr.io/thadeu/anway:0.5.1
+```
+
+| Tag | Example | Points to |
+|---|---|---|
+| Full version | `0.5.1` | This release only |
+| Minor | `0.5` | The last `0.5.x` release |
+| Major | `0` | The last `0.x` release |
+| `latest` | `latest` | The last release |
+
+Use a full version in production, so that a pull does not change the server. See [Docker](/docs/server/docker) for volumes, settings, and a Compose example.
+
+### Ruby platform gem
+
+The `anway` gem has one build for each platform. Each platform build contains the server binary of the same version, so a Ruby app can run the server with no other download.
+
+| Gem platform | Server inside |
+|---|---|
+| `x86_64-linux-gnu`, `x86_64-linux-musl` | Linux, x86-64 |
+| `aarch64-linux-gnu`, `aarch64-linux-musl` | Linux, arm64 |
+| `x86_64-darwin` | macOS, Intel |
+| `arm64-darwin` | macOS, Apple silicon |
+
+Bundler installs the build for your platform:
+
+```bash
+bundle add anway
+
+bundle exec anway server
+```
+
+The `ruby` platform build has no server. On that build, set `ANWAY_SERVER_PATH` to a server binary, or set a URL to use a server that runs apart. See [Ruby and Rails](/docs/ruby).
+
+### Build from source
+
+The server needs Go 1.27. The repository uses [mise](https://mise.jdx.dev) for the tool versions.
+
+```bash
+git clone https://github.com/thadeu/anway.git
+cd anway
+
+mise install
+
+go build -o bin/server ./cmd/server
+
+DATA_DIR=./data ./bin/server
+```
+
+## Clients
+
+Each client reads the server address from `ANWAY_URL`. The URL has this form:
+
+```text
+tcp://:password@host:7419
+```
+
+Use `tcp+tls://` when the server uses TLS. With no password, leave out `:password@`. When `ANWAY_URL` is not set, the clients use `tcp://127.0.0.1:7419`.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+
+<Tab value="Ruby">
+
+Ruby 3.4 or later. The Rails integration needs Rails 8.1.
+
+```bash
+bundle add anway
+```
+
+In a Rails app, run the installer after the gem:
+
+```bash
+bin/rails generate anway:install
+
+bin/dev
+```
+
+The installer writes `config/anway.yml` and `bin/anway`, and adds `plugin :anway` to `config/puma.rb`. Add `--active-job` to the installer to use Anway as the Active Job adapter. See [Ruby and Rails](/docs/ruby).
+
+</Tab>
+
+<Tab value="Go">
+
+Go 1.26 or later.
+
+```bash
+go get github.com/thadeu/anway-go
+```
+
+```go
+import anway "github.com/thadeu/anway-go"
+```
+
+See [Go](/docs/go).
+
+</Tab>
+
+<Tab value="Node.js">
+
+Node 24 or later, or Bun 1.2 or later. The package has ESM and CommonJS builds, TypeScript types, and no runtime dependencies.
+
+```bash
+pnpm add @anway/client
+```
+
+```ts
+import Anway from '@anway/client';
+```
+
+See [Node.js and Bun](/docs/nodejs).
+
+</Tab>
+
+</Tabs>
+
+## Version rules
+
+- A client and a server with the same version are tested together.
+- A client also works with an older server. A feature that needs a new command, such as bulk push with `PUSHB`, needs a server that has the command.
+- Upgrade the server first, and then the clients.

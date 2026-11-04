@@ -1,0 +1,132 @@
+---
+title: Scheduled jobs
+description: Run a job at a later time with at, or push jobs on a cron schedule.
+---
+
+Anway has two ways to run work later:
+
+- **`at`:** push one job now, and the server runs it at the time that you give.
+- **Cron:** the server pushes a job on a repeating schedule, from its YAML settings.
+
+## Run a job later
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+ReminderJob.perform_in(300, user.id)
+ReminderJob.perform_at(Time.now + 3600, user.id)
+
+Anway.push('reminder.send', [user.id], at: Time.now + 3600)
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("reminder.send", []any{user.ID}, anway.Options{
+	At: time.Now().Add(time.Hour),
+})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const at = new Date(Date.now() + 60 * 60 * 1000);
+
+await client.push(new Anway.Job('reminder.send', [user.id], { at }));
+```
+
+</Tab>
+</Tabs>
+
+- In Ruby, `perform_in` takes seconds, and `perform_at` takes a time. `set(at: ...)` also works.
+- In Go, `job.RunAt(t)` sets the time on a job that you already made.
+- `at` is only for a push. A worker declaration does not take it.
+
+### How it works
+
+1. The client sends `at` as an RFC 3339 time.
+2. A job with a future `at` goes to the Scheduled set, not to its queue.
+3. The server checks the Scheduled set about once per second. When the time arrives, it moves the job to the end of its queue.
+4. A worker then fetches the job as usual.
+
+A job with an `at` in the past, or with no `at`, goes to its queue at once. The time is the earliest run time, not an exact time: the job can wait in its queue after that time, for example behind other jobs.
+
+A scheduled job is on disk, as any job. It survives a server restart.
+
+### Change scheduled jobs
+
+Use `mutate` with the `scheduled` target. `requeue` runs the jobs now, `kill` moves them to the Dead set, and `discard` deletes them. See [Retries](/docs/concepts/retries#run-kill-or-discard-jobs).
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.client.mutate('requeue', 'scheduled', event: 'reminder.send')
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+return client.Mutate(ctx, "requeue", "scheduled", anway.Filter{Event: "reminder.send"})
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.mutate('requeue', 'scheduled', { event: 'reminder.send' });
+```
+
+</Tab>
+</Tabs>
+
+The **Jobs** page of the web console also lists the scheduled jobs.
+
+## Cron
+
+The server pushes cron jobs itself. You do not need a client process for the schedule. Add the entries to a YAML file in the server `CONF_DIR`:
+
+```yaml title="conf.d/cron.yml"
+cron:
+  - schedule: "*/5 * * * *"
+    job:
+      type: Cleanup
+      queue: ops
+      retry: 3
+      args: [1]
+      custom:
+        expires_in: 60
+```
+
+| Key | Meaning |
+|---|---|
+| `schedule` | A standard cron expression with five fields: minute, hour, day of the month, month, day of the week. |
+| `job.type` | The job type. Required. |
+| `job.queue` | The queue. The default is `default`. |
+| `job.args` | The args. The default is `[]`. |
+| `job.retry` | The retries. The default is the server default, 25. |
+| `job.reserve_for` | The reservation in seconds. |
+| `job.custom` | The custom hash, for example `expires_in`. |
+
+- Schedules use UTC.
+- A time that the server missed while it was down does not run later.
+- With more than one server, each server pushes the job.
+- An unknown key or a bad schedule is an error. At boot, an invalid file stops the server.
+- `SIGHUP` reloads the files. If a file is invalid, the old settings stay active.
+
+The example uses `expires_in: 60`. If its job waits more than 60 seconds in the queue, the server discards it at fetch. See [Expiring jobs](/docs/concepts/unique-jobs#expiring-jobs).
+
+The **Schedules** page of the [web console](/docs/server/console) shows each cron entry, with its job, queue, and the time of the next run. See [Configuration](/docs/server/configuration) for `CONF_DIR`.
+
+<Callout type="info" title="Moving from Solid Queue">
+Tasks in Rails `recurring.yml` do not move to Anway by themselves. Move them to the server cron.
+</Callout>

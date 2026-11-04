@@ -1,0 +1,141 @@
+---
+title: Web console
+description: See queues, jobs, workers, topics, and schedules in a browser, and act on them.
+---
+
+The web console, `anway-webui`, shows the state of one Anway server in a browser. You can pause a queue, retry or discard failed jobs, kill a stuck job, and change the threads of a worker.
+
+The console is a separate program. It reads the server [HTTP API](/docs/server/http-api) and keeps the API token on its side, so the token never goes to a browser.
+
+<Callout type="error" title="No login yet">
+The console has no login. Anyone who can open it can kill and delete jobs. Run it only on a private network, or behind a proxy that checks the user, such as the Rails mount below. Do not put it on a public address.
+</Callout>
+
+## Run the console
+
+The console needs the server HTTP API. Start the server with `WEB_ADDR` and `WEB_TOKEN`:
+
+```bash
+SERVER_PASSWORD=change-me \
+WEB_ADDR=127.0.0.1:7420 \
+WEB_TOKEN=change-me-too \
+anway
+```
+
+Then start the console with the same token. Use one of these ways.
+
+<Tabs items={['Docker', 'Binary', 'Rails']}>
+
+<Tab value="Docker">
+
+Build the image from the repository, and run it:
+
+```bash
+docker build -t anway-webui https://github.com/thadeu/anway-webui.git
+
+docker run -p 127.0.0.1:8080:8080 \
+  -e ANWAY_API_URL=http://anway:7420 \
+  -e WEB_TOKEN=change-me-too \
+  anway-webui
+```
+
+This example expects a server container with the name `anway` on the same Docker network, with `WEB_ADDR=0.0.0.0:7420`. [Docker](/docs/server/docker#compose) has a Compose example with the server and the console.
+
+Open `http://127.0.0.1:8080`.
+
+</Tab>
+
+<Tab value="Binary">
+
+The console is built with Bun. Build one binary from the repository:
+
+```bash
+git clone https://github.com/thadeu/anway-webui.git
+cd anway-webui
+
+mise install
+bun install
+
+bun run build
+
+ANWAY_API_URL=http://127.0.0.1:7420 WEB_TOKEN=change-me-too ./dist/anway-webui
+```
+
+Open `http://127.0.0.1:8080`.
+
+</Tab>
+
+<Tab value="Rails">
+
+The `anway` gem can start the console next to the server and serve it under a path of your app. Name the console binary in `config/anway.yml`:
+
+```yaml title="config/anway.yml"
+console:
+  path: /path/to/anway-webui
+```
+
+Mount it in a route that checks the user:
+
+```ruby title="config/routes.rb"
+authenticate :user, ->(user) { user.admin? } do
+  mount Anway::Web => "/anway"
+end
+```
+
+`bin/anway` then starts the console on `127.0.0.1:7421`. With an embedded server, it also opens the server API on `127.0.0.1:7420`, with a random token that only these two processes know. See [Ruby and Rails](/docs/ruby) for the other keys.
+
+</Tab>
+
+</Tabs>
+
+## Settings
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `ANWAY_API_URL` | `http://127.0.0.1:7420` | Address of the server HTTP API |
+| `WEB_TOKEN` | Empty | Token of the server HTTP API |
+| `PORT` | `8080` | Port of the console |
+| `HOST` | `0.0.0.0` | Address of the console |
+
+`GET /healthz` on the console returns `{"status":"ok"}`.
+
+## Pages
+
+| Page | What it shows | What you can do |
+|---|---|---|
+| Overview | Job states, live throughput, running jobs, queues, workers, and things that need attention | Select a period on the chart |
+| Queues | Size, oldest job, rate, and time to clear of each queue | Pause, resume, and clear a queue |
+| Jobs | Running and waiting jobs, with filters and pages. Retries, scheduled jobs, and dead jobs, grouped by cause. | Kill a running job. Run, kill, or discard a group. |
+| Workers | Worker processes, runtime, threads, state, and last beat | Change the threads or the autoscale of a worker |
+| Topics | Each topic, its subscriptions, and the workers that fetch from each subscription queue | |
+| Schedules | Cron entries with the next run, and throttles | |
+| Components (`/ui`) | Each design system component of the console, with working examples | |
+
+A worker shows as `hostname:pid`, with its tag. A topic subscription with no worker shows **No worker**: its copies wait in the queue until a worker fetches from it.
+
+## Live updates
+
+- The Overview asks the API for new data every 2 seconds.
+- The other pages ask the console for the same URL every 2 seconds, and change only what is different, with no reload.
+- An update waits while a dialog is open, a field has focus, or text is selected, and while the browser tab is hidden.
+
+## The Overview chart
+
+The chart has two lines, each with its own axis:
+
+- **Jobs** on the left: the done and failed jobs.
+- **Threads** on the right: the peak of worker threads in each step. It shows when autoscale raised the threads.
+
+A click on a legend item hides its line. Drag across a period to select a slice: the chart shows only that period, and it stops the live updates. The chip clears the slice, and the browser Back button restores the window before.
+
+Filters and the chart window are in the URL, such as `?range=custom&from=…&until=…` or `?hide=threads`. So a link shows the same view to another person.
+
+## Under a path
+
+A proxy can serve the console under a path, such as `/anway`. The proxy sends the path in the `X-Forwarded-Prefix` header, and the browser host in `Host`.
+
+- Links, forms, assets, and API calls stay under the path.
+- A prefix that is not a plain path, such as `//host` or `/../x`, becomes the root.
+- The console accepts a form post only when its `Origin` is the page origin. Behind a proxy that ends TLS, send `X-Forwarded-Proto: https`.
+
+So a form on another site cannot change jobs, also through a proxy that has a user session.

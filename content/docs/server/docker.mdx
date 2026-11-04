@@ -1,0 +1,152 @@
+---
+title: Docker
+description: Run the server from the official image, with a volume for the data.
+---
+
+The image `ghcr.io/thadeu/anway` holds the server binary and nothing else. Use it to run Anway in Docker, Compose, or Kubernetes.
+
+```bash
+docker run -d --name anway \
+  -p 7419:7419 \
+  -e SERVER_PASSWORD=change-me \
+  -v anway-data:/data \
+  --stop-timeout 35 \
+  ghcr.io/thadeu/anway:0.5.1
+```
+
+Clients then connect with `tcp://:change-me@localhost:7419`.
+
+## Image
+
+| Item | Value |
+|---|---|
+| Platforms | `linux/amd64`, `linux/arm64` |
+| Tags | The full version (`0.5.1`), `major.minor` (`0.5`), `major` (`0`), and `latest` |
+| Binary | `/usr/local/bin/anway` |
+| User | UID 65532, not root |
+| Ports | 7419 (work protocol), 7420 (HTTP API, off by default) |
+| Volume | `/data` |
+
+The image sets these env vars:
+
+| Env var | Value in the image |
+|---|---|
+| `BIND_ADDR` | `0.0.0.0:7419` |
+| `DATA_DIR` | `/data` |
+| `CONF_DIR` | `/etc/anway/conf.d` |
+
+All other settings have their normal defaults. See [Configuration](/docs/server/configuration).
+
+## Password
+
+The image binds to `0.0.0.0`, so `SERVER_PASSWORD` is required. Without it, the server does not start.
+
+## Data volume
+
+Keep `/data` on a volume. Without a volume, a new container has no jobs.
+
+The process runs as UID 65532. A bind mount on `/data` must let this user write:
+
+```bash
+mkdir -p /srv/anway/data
+sudo chown 65532:65532 /srv/anway/data
+
+docker run -d --name anway \
+  -p 7419:7419 \
+  -e SERVER_PASSWORD=change-me \
+  -v /srv/anway/data:/data \
+  ghcr.io/thadeu/anway:0.5.1
+```
+
+Run one container for each data volume. Two servers cannot share one data file.
+
+## YAML settings
+
+Mount the YAML settings for cron and throttles at `/etc/anway/conf.d`:
+
+```bash
+docker run -d --name anway \
+  -p 7419:7419 \
+  -e SERVER_PASSWORD=change-me \
+  -v anway-data:/data \
+  -v ./conf.d:/etc/anway/conf.d:ro \
+  ghcr.io/thadeu/anway:0.5.1
+```
+
+## Signals
+
+| Command | Effect |
+|---|---|
+| `docker kill -s HUP anway` | Load the YAML settings again. |
+| `docker kill -s USR1 anway` | Write a backup to `/data/backups`. |
+| `docker stop anway` | Stop. Running jobs get `SHUTDOWN_TIMEOUT` to report. |
+
+Set the stop timeout above `SHUTDOWN_TIMEOUT`, which is 30 seconds, so that running jobs can report. The examples use 35 seconds. In Kubernetes, use `terminationGracePeriodSeconds`.
+
+A restart does not stop the workers. They reconnect and fetch again.
+
+## HTTP API
+
+To serve the [HTTP API](/docs/server/http-api) for the web console, set `WEB_ADDR` and `WEB_TOKEN`:
+
+```bash
+docker run -d --name anway \
+  -p 7419:7419 \
+  -p 127.0.0.1:7420:7420 \
+  -e SERVER_PASSWORD=change-me \
+  -e WEB_ADDR=0.0.0.0:7420 \
+  -e WEB_TOKEN=change-me-too \
+  -v anway-data:/data \
+  ghcr.io/thadeu/anway:0.5.1
+```
+
+Publish port 7420 only on a private network. The API can delete and kill jobs.
+
+## Health checks
+
+The image has no shell, so a check command cannot run inside the container. Use a TCP probe on port 7419. When the HTTP API is on, `GET /healthz` on port 7420 also works, with no token.
+
+## Compose
+
+This example runs the server and the [web console](/docs/server/console). The console reads the HTTP API on the private Compose network, and the host sees the console only on `127.0.0.1`.
+
+```yaml title="compose.yaml"
+services:
+  anway:
+    image: ghcr.io/thadeu/anway:0.5.1
+    ports:
+      - "7419:7419"
+    environment:
+      SERVER_PASSWORD: change-me
+      WEB_ADDR: 0.0.0.0:7420
+      WEB_TOKEN: change-me-too
+    volumes:
+      - anway-data:/data
+      - ./conf.d:/etc/anway/conf.d:ro
+    stop_grace_period: 35s
+
+  console:
+    build: https://github.com/thadeu/anway-webui.git
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ANWAY_API_URL: http://anway:7420
+      WEB_TOKEN: change-me-too
+    depends_on:
+      - anway
+
+volumes:
+  anway-data:
+```
+
+```bash
+docker compose up -d
+```
+
+The console has no login yet. Keep it on a private network. See [Web console](/docs/server/console).
+
+## Rules
+
+- Run one replica only. Two servers cannot share one data file.
+- Keep the data on a volume, and keep [backups](/docs/server/operations#backups) on another disk.
+- Use a full version tag in production, so that a pull does not change the server.

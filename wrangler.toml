@@ -1,0 +1,26 @@
+# Cloudflare Workers with static assets, for `wrangler deploy` from a terminal
+# and from CI (.github/workflows/deploy.yml).
+#
+# A route on the clowk.in zone, not a Pages custom domain and not a Workers
+# Custom Domain. Both of those give the host its own certificate and routing
+# path. Browsers reuse one HTTP/2 connection for hosts that share an IP and a
+# certificate, and contagorda.com saw intermittent 403 errors from that on its
+# other hosts. A route runs in the normal proxy path of the zone, which picks
+# the site by the Host header on any connection.
+#
+# The DNS record for anway.clowk.in must exist and be proxied (for example
+# AAAA 100::). With the route in front, its target is never reached.
+
+name = "anway-lp"
+compatibility_date = "2026-09-01"
+
+routes = [
+  { pattern = "anway.clowk.in/*", zone_name = "clowk.in" },
+]
+
+[assets]
+directory = "./out"
+# `trailingSlash: true` exports /terms/index.html, and this serves it at /terms/.
+html_handling = "auto-trailing-slash"
+# The not-found page that `next build` writes to out/404.html.
+not_found_handling = "404-page"

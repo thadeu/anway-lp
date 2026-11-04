@@ -1,0 +1,285 @@
+---
+title: Workers
+description: Write job classes with Anway::Worker, push jobs, and run the worker process.
+---
+
+`Anway::Worker` makes a Ruby class a job. You declare the options of the class with `anway_options`, push jobs with `perform_async` and related methods, and run them in a worker process with `bundle exec anway`.
+
+```ruby title="app/jobs/welcome_job.rb"
+class WelcomeJob
+  include Anway::Worker
+
+  anway_options event: 'email.welcome', retry: 5
+  anway_options topics: %w[user.created], queue: 'mailers'
+
+  def perform(user_id)
+    UserMailer.welcome(user_id).deliver_now
+  end
+end
+```
+
+```ruby
+WelcomeJob.perform_async(1)
+WelcomeJob.perform_in(300, 1)
+WelcomeJob.set(queue: 'low', unique_for: 60).perform_async(1)
+```
+
+## Rules for a job class
+
+- `perform` gets the args of the job.
+- Args must be JSON types with string hash keys. Symbols, times, and objects raise `ArgumentError`.
+- Delivery is at least once. A job can run more than one time, so make each job idempotent.
+- Inside `perform`, `jid` returns the job id, and `job` returns the `Anway::Job`, with `args`, `queue`, and `custom`.
+- Only registered classes run. A job type from the network never becomes a free constant lookup.
+
+## Events
+
+`event` is the name of what the job handles. It goes to the server as the job type. The default is the class name.
+
+Give an event name when a worker in another language runs the job, or when an app in another language pushes it:
+
+```ruby
+class ResizeImage
+  include Anway::Worker
+
+  anway_options event: 'image.resize', queue: 'media'
+
+  def perform(image_id)
+    Image.find(image_id).resize!
+  end
+end
+```
+
+- Each event has one class. Two classes with the same event raise `ArgumentError`.
+- A subclass inherits all options of its parent except `event` and `topics`.
+
+## Options
+
+`anway_options` declares the options of the class. All Anway clients use the same keys, and the gem translates them to the fields of the protocol. An unknown key raises `ArgumentError`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `event` | String | The class name | The job type on the server. Only in `anway_options`. |
+| `queue` | String | `default` | The queue of the job. |
+| `retry` | Integer | 25 (the server default) | The number of retries. `0` discards the job at the first failure. `-1` sends it to the Dead set at once. |
+| `reserve_for` | Integer | 1800 (the server default) | Seconds that a worker can hold the job. The minimum is 60. When the time ends, the job fails and follows the retry rules. |
+| `backtrace` | Integer | 30 | The number of backtrace lines that a failure keeps. |
+| `at` | Time | None | A time to run the job later. Only for a push, not in `anway_options`. |
+| `unique_for` | Integer | None | Seconds of a unique lock. The server refuses a job with the same type, queue, and args while the lock holds. |
+| `unique_until` | String | `success` (the server default) | `success` or `start`: the time when the server releases the unique lock. |
+| `expires_in` | Integer | None | Seconds. The server discards the job at fetch after this time. |
+| `expires_at` | Time | None | A time. The server discards the job at fetch after it. The gem sends it as RFC 3339. |
+| `track` | Boolean | None | `true` turns on job tracking, so the job can report its progress. |
+| `on_dead` | Hash | None | `{ event:, queue: }`. When the job dies, the server pushes a job of this event. |
+| `custom` | Hash | None | The keys of your app. A key above wins over a key with the same name here. |
+| `topics` | Array | `[]` | One topic subscription for each name. Only in `anway_options`. Refer to [Topics](/docs/ruby/topics). |
+
+The gem sends `unique_for`, `unique_until`, `expires_in`, `expires_at`, `track`, and `on_dead` in the `custom` field of the job. Refer to [Unique jobs](/docs/concepts/unique-jobs) and [Retries](/docs/concepts/retries) for the server rules.
+
+`on_dead` without an `event` raises `ArgumentError` when the class loads.
+
+### Merge rules
+
+You can call `anway_options` more than once. The option sets merge in call order:
+
+- A single value, such as `queue` or `retry`: the last set that has it wins.
+- `topics`: the topics of all sets add up, in order, with no duplicates.
+- `custom`: the hashes merge, and a later key wins.
+
+```ruby
+class ReportJob
+  include Anway::Worker
+
+  anway_options queue: 'reports', custom: { 'team' => 'billing' }
+  anway_options retry: 3, custom: { 'owner' => 'ops' }
+
+  def perform(report_id)
+    Report.find(report_id).build!
+  end
+end
+
+ReportJob.anway_options
+# => { event: "ReportJob", topics: [], queue: "reports", custom: { "team" => "billing", "owner" => "ops" }, retry: 3 }
+```
+
+`anway_options` with no keys returns the merged options. `set` merges with the options of the class by the same rules.
+
+## Push jobs
+
+| Method | Meaning |
+|---|---|
+| `perform_async(*args)` | Pushes one job now. Returns the jid. |
+| `perform_in(seconds, *args)` | Pushes one job that runs after this many seconds. |
+| `perform_at(time, *args)` | Pushes one job that runs at this time. |
+| `perform_bulk(args_list)` | Pushes one job for each item. Each item is the args of one job. |
+| `set(**options)` | Changes the options for one push. Takes the push keys: all keys of the table above except `event` and `topics`. |
+
+```ruby
+WelcomeJob.perform_at(Time.now + 3600, 1)
+
+WelcomeJob.set(queue: 'low', expires_in: 600).perform_in(60, 1)
+```
+
+In a Rails app with Active Record, a push inside a database transaction waits for the commit, and a rollback cancels it. Refer to [Active Job](/docs/ruby/active-job#transactions).
+
+### Bulk push
+
+A bulk push sends many jobs with one `PUSHB` command, and the server puts them in with one write. Use it to push a large list of jobs fast.
+
+```ruby
+WelcomeJob.perform_bulk([[1], [2], [3]])
+# => {}
+
+WelcomeJob.set(queue: 'low', at: Time.now + 300).perform_bulk(users.map { |user| [user.id] })
+```
+
+- The jobs get the options of the class and of `set`, as `perform_async` does.
+- The result is a hash with the reason for each refused job, by jid. When all jobs are in, it is `{}`.
+- A refused job, such as a duplicate jid or a job that a unique lock blocks, does not stop the other jobs.
+- One `PUSHB` takes at most 1,000 jobs. `perform_bulk` splits a longer list into more commands, and merges the failures.
+- The gem builds all jobs before the first send. An item that is not valid raises `ArgumentError`, and no job goes to the server.
+- If a connection error occurs after the first `PUSHB`, the jobs of the earlier commands stay in, and the gem does not send them again.
+- Inside a database transaction, the push waits for the commit, and the result is `nil`.
+
+Refer to [Bulk push](/docs/concepts/bulk-push).
+
+### Push without a class
+
+`Anway.push` and `Anway.push_bulk` send jobs with no local class, for a worker in any language. They take the same push keys:
+
+```ruby
+Anway.push('image.resize', [42], queue: 'media', expires_in: 600)
+
+Anway.push_bulk([Anway::Job.new('image.resize', [1]), Anway::Job.new('image.resize', [2])])
+```
+
+## Run the worker process
+
+```bash
+bundle exec anway -q critical,mailers,default -c 10
+```
+
+In Rails, `bin/anway` runs the same command. The worker process sets `ANWAY_WORKER=1` before it loads the app.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-q`, `--queues` | The queues of the job classes, of their subscriptions, and of the Active Job classes, and `default` | Queues in order, as `name` or `name:weight`. |
+| `-c`, `--concurrency` | `10` | The number of job threads. |
+| `-t`, `--timeout` | `25` | Seconds for jobs to finish at a stop. |
+| `-r`, `--require` | `config/environment.rb` | The file that loads the jobs. Required outside Rails. |
+| `-C`, `--config` | `config/anway.yml` | The YAML config file. |
+| `-e`, `--environment` | `RAILS_ENV`, then `APP_ENV`, then `development` | The environment section of the YAML file. |
+| `-l`, `--label` | None | A worker label. You can give it more than one time. |
+| `-g`, `--tag` | The app folder | The name of the app in the console. |
+| `-a`, `--autoscale` | Off | Turns on autoscale, up to this many threads. |
+| `-v`, `--verbose` | Off | Debug logs. |
+| `-V`, `--version` | | Prints the version. |
+
+A queue list without weights uses strict order. With weights, such as `critical:4,default:1`, each fetch uses a new random order in which a queue with a higher weight comes first more often.
+
+You can also set these options in `config/anway.yml`. Refer to [Configuration](/docs/ruby/configuration).
+
+### Signals and exit codes
+
+| Signal | Effect |
+|---|---|
+| `TERM`, `INT` | Stop. |
+| `TSTP` | Quiet: stop fetching and stay alive. |
+| `TTIN` | Write thread data to the log. |
+
+The exit codes are `0` for a normal stop, `1` for a boot failure, and `2` for a usage error.
+
+### Shutdown
+
+At a stop, jobs get `--timeout` seconds to finish. Then the worker raises `Anway::Shutdown` in them, and they get 5 more seconds to return. The process then fails the jobs that still run, and stops.
+
+`Anway::Shutdown` is an `Exception`, not a `StandardError`, so a plain `rescue` in `perform` does not catch it.
+
+<Callout type="warn" title="Container stop timeout">
+Set the stop timeout of the container above 30 seconds, so that jobs get the full time to finish.
+</Callout>
+
+## Threads and autoscale
+
+Each job runs in a thread of the worker process. `concurrency` sets the start count. The console and the server API can change the count of a running worker.
+
+With autoscale, the server adds threads while jobs wait, and removes them when the load drops:
+
+```yaml title="config/anway.yml"
+concurrency: 10
+autoscale:
+  max: 40
+  min: 5
+```
+
+Or with the CLI:
+
+```bash
+bin/anway --concurrency 10 --autoscale 40
+```
+
+- `concurrency` is the start count, and the default `min`.
+- `max` is required. `min` is optional, between 1 and `max`.
+- While jobs wait in the queues of the worker and all threads are busy, each beat adds a quarter of the threads, up to `max`.
+- In a burst, with at least 2 waiting jobs for each thread, each beat doubles the threads and adds 15% more, up to `max`.
+- After a minute with no waiting jobs and at most half of the threads busy, each step removes a quarter, down to `min`.
+- The worker beats every 15 seconds. In a burst, from 10 to 40 threads takes about 30 seconds (10, 22, 40). Back to 10 takes about 5 minutes.
+- To remove a thread, the worker lets it finish its job first. It never stops a running job to scale down.
+
+The worker never runs more threads than its Active Record pool. Make the pool of the worker process as large as `max`. Refer to [Active Job](/docs/ruby/active-job#database-pool) and [Autoscale](/docs/concepts/autoscale).
+
+### Change the threads from the console
+
+In the console, open **Workers**, then **Scale**. Set a thread count, or turn on autoscale with a min and a max. The worker gets the change at its next beat, up to 15 seconds later.
+
+The server saves the change for the worker name, so after a restart or a deploy the worker starts with it, not with `config/anway.yml`. The console shows "saved in console" on that worker. **Reset to config** drops the saved setting.
+
+### Plain Ruby
+
+`Anway::Runner` takes the same options:
+
+```ruby
+runner = Anway::Runner.new(
+  queues: %w[default],
+  concurrency: 10,
+  autoscale: { max: 40 },
+  limit: 40
+)
+
+runner.run
+```
+
+`limit` is the most threads that this process can run. Without `limit`, the server accepts up to 1000 threads.
+
+## Worker identity
+
+The console shows each worker process as `hostname:pid`, with its tag, queues, threads, and start time.
+
+- The hostname is the machine name. Set `hostname` in `config/anway.yml`, or `ANWAY_HOSTNAME`.
+- The tag is the app folder, for example `shop` for `~/code/shop`. Set `tag` in `config/anway.yml`, `ANWAY_TAG`, or `--tag`.
+- `ANWAY_HOSTNAME` and `ANWAY_TAG` have priority over the file.
+
+```yaml title="config/anway.yml"
+hostname: worker.1
+tag: shop
+```
+
+In containers, set `ANWAY_HOSTNAME` to a stable name, such as `worker.1`. A random hostname gives the worker a new name at each deploy, and a thread count saved in the console does not apply.
+
+## Track progress
+
+A job with `track: true` can report its progress while it runs:
+
+```ruby
+class ImportJob
+  include Anway::Worker
+
+  anway_options track: true
+
+  def perform(file_id)
+    track(percent: 50, desc: 'half of the rows are in')
+  end
+end
+```
+
+`track` takes `percent:`, `desc:`, and `reserve_until:`.

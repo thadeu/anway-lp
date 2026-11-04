@@ -1,0 +1,36 @@
+---
+title: Introduction
+description: Anway is an open source background job server for Ruby, Go, and Node.js apps.
+---
+
+Anway runs your background jobs. An app pushes a job to a queue on the Anway server. The server writes the job to disk. A worker fetches the job, runs it, and tells the server the result. If the job fails, the server runs it again later.
+
+The apps and the workers can use different languages. A Rails app can push a job that a Go worker runs, and a Go service can publish an event that a Rails app and a Node.js app both receive.
+
+```text
+ apps                      server                     workers
+ ----                      ------                     -------
+ Rails app   ──push──┐                           ┌──> Ruby worker
+ Go service  ──push──┼──> queues on disk ──fetch─┼──> Go worker
+ Node.js API ──push──┘                           └──> Node.js worker
+```
+
+## What you get
+
+- **One server for all languages.** The official clients are for Ruby and Rails, Go, and Node.js or Bun. Anway also speaks the Faktory work protocol, so Faktory clients connect too.
+- **Jobs on disk.** The server replies OK only after it writes the job to disk.
+- **Retries and a Dead set.** A failed job runs again later. After its last retry, it waits in the Dead set until you retry or delete it.
+- **Topics.** One event goes to many queues, one copy for each subscriber.
+- **Thread autoscale.** The server tells each worker how many threads to run, from the size of its backlog.
+- **A web console.** See queues, jobs, workers, and throughput, and act on them.
+
+## Start here
+
+<Cards>
+  <Card title="Quickstart" href="/docs/getting-started" description="Start the server, push a job, and run it." />
+  <Card title="Concepts" href="/docs/concepts" description="Jobs, queues, retries, topics, and autoscale." />
+  <Card title="Ruby and Rails" href="/docs/ruby" description="The anway gem, workers, and Active Job." />
+  <Card title="Go" href="/docs/go" description="The anway-go module." />
+  <Card title="Node.js and Bun" href="/docs/nodejs" description="The @anway/client package." />
+  <Card title="Run the server" href="/docs/server" description="Configuration, Docker, TLS, and the console." />
+</Cards>

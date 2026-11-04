@@ -1,0 +1,46 @@
+import Link from 'next/link';
+
+import { CopyCommand } from '@/components/site/copy-command';
+import { RouteMap } from '@/components/site/route-map';
+import { site } from '@/lib/site';
+
+export function Hero() {
+  return (
+    <section className="mx-auto w-full max-w-6xl px-4 pb-16 pt-32 md:px-6 md:pb-24 md:pt-40">
+      <div className="max-w-3xl">
+        <h1 className="font-display text-[40px] font-semibold leading-[1.04] tracking-[-0.035em] text-ink md:text-[64px]">
+          Background jobs for every language in your stack
+        </h1>
+
+        <p className="mt-6 max-w-2xl text-[17px] leading-relaxed text-sub md:text-[19px]">
+          Anway is one small server for background jobs. Your Rails app, your Go services, and your Node.js APIs push
+          jobs to the same queues, and workers in any of these languages run them.
+        </p>
+
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <Link
+            href="/docs/getting-started"
+            className="rounded-xs bg-green px-5 py-3 text-center text-[15px] font-medium text-navy hover:bg-[#5ce6aa]"
+          >
+            Read the quickstart
+          </Link>
+
+          <a
+            href={site.github}
+            className="rounded-xs border border-line2 px-5 py-3 text-center text-[15px] font-medium text-ink hover:bg-panel2"
+          >
+            View on GitHub
+          </a>
+        </div>
+
+        <div className="mt-6 max-w-2xl">
+          <CopyCommand command="docker run -p 7419:7419 -v anway-data:/data ghcr.io/thadeu/anway" />
+        </div>
+      </div>
+
+      <div className="mt-16 md:mt-20">
+        <RouteMap />
+      </div>
+    </section>
+  );
+}

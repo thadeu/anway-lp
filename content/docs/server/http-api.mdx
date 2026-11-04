@@ -1,0 +1,275 @@
+---
+title: HTTP API
+description: Read the server state and act on queues, jobs, and workers over HTTP, as the web console does.
+---
+
+The HTTP API is for operators and tools. The [web console](/docs/server/console) uses it. With it, you can read the job states and metrics, pause a queue, retry or discard failed jobs, and change the threads of a worker.
+
+Job traffic never uses this API. Producers and workers use the TCP work protocol, so the API can be off with no effect on jobs.
+
+```bash
+curl -H "Authorization: Bearer $WEB_TOKEN" http://127.0.0.1:7420/api/v1/overview
+```
+
+## Turn on the API
+
+The API is off by default. Set `WEB_ADDR` to turn it on:
+
+```bash
+WEB_ADDR=127.0.0.1:7420 WEB_TOKEN=change-me-too anway
+```
+
+- An address that is not a loopback address needs `WEB_TOKEN`. Without it, the server does not start.
+- The `--web` flag has the same effect as `WEB_ADDR`.
+- The log shows `web API started` with the address.
+
+## Authentication
+
+When `WEB_TOKEN` is set, each route under `/api` needs this header:
+
+```text
+Authorization: Bearer <WEB_TOKEN>
+```
+
+A missing or wrong token gets status 401. `GET /healthz` needs no token.
+
+<Callout type="warn" title="Keep the token on the server side">
+Do not give the token to a browser. A proxy holds it, such as the web console or the Rails mount `Anway::Web`. Publish the API port only on a private network, because the API can kill and delete jobs.
+</Callout>
+
+## Errors
+
+An error reply is JSON with one key:
+
+```json
+{"error": "invalid queue name"}
+```
+
+| Status | When |
+|---|---|
+| 400 | The request is not valid, such as a bad parameter or body. |
+| 401 | The token is missing or wrong. |
+| 404 | No worker has this id. |
+| 409 | A conflict: a job that a unique lock blocks, a job id that exists, or a worker that cannot change its threads. |
+| 500 | An internal error. |
+
+A request body can be at most 1 MiB.
+
+## Routes
+
+| Method | Path | Result |
+|---|---|---|
+| GET | `/healthz` | `{"status":"ok"}` |
+| GET | `/api/v1/overview` | Server, job states, totals, threads, live rate, and counts |
+| GET | `/api/v1/metrics` | Done and failed jobs over time, and the peak of worker threads |
+| GET | `/api/v1/queues` | Each queue: size, paused, oldest job age, jobs per minute, time to clear |
+| POST | `/api/v1/queues/{name}/pause` | Pause the queue |
+| POST | `/api/v1/queues/{name}/resume` | Resume the queue |
+| DELETE | `/api/v1/queues/{name}/jobs` | Delete the waiting jobs of the queue |
+| GET | `/api/v1/jobs` | One page of jobs of a set |
+| GET | `/api/v1/jobs/groups` | The jobs of a set, grouped by cause |
+| POST | `/api/v1/jobs/actions` | Requeue, kill, or discard jobs |
+| POST | `/api/v1/jobs` | Push a job |
+| GET | `/api/v1/workers` | Connected worker processes |
+| PATCH | `/api/v1/workers/{wid}` | Change the threads or the autoscale of a worker |
+| GET | `/api/v1/topics` | Topics, their subscriptions, and the workers of each subscription queue |
+| GET | `/api/v1/schedules` | Cron entries with the next run, and throttles in use |
+| GET | `/api/v1/batches` | Batches, up to 200 |
+
+## Overview
+
+`GET /api/v1/overview` returns one summary of the server:
+
+| Key | Content |
+|---|---|
+| `server` | `version`, `uptime_seconds`, and `connections` |
+| `states` | Job counts: `scheduled`, `waiting`, `working`, `retries`, and `dead` |
+| `totals` | `processed`, `failures`, and `expired` |
+| `threads` | `busy`, `total`, and `max`. `max` adds the autoscale max of each worker, or its thread count when autoscale is off. |
+| `rate` | `done_per_second` and `failed_per_second`, the average of the last 5 complete seconds |
+| `workers`, `queues` | The number of connected workers and of queues |
+| `paused` | The names of the paused queues |
+
+## Metrics
+
+`GET /api/v1/metrics?range=1h` returns a series of points. The default range is `1h`.
+
+| Range | Points |
+|---|---|
+| `60s` | 60, one per second |
+| `15m`, `1h` | One per minute |
+| `24h` | One per 10 minutes |
+| `7d` | One per hour |
+| `30d` | One per 4 hours |
+| `60d` | One per 8 hours |
+
+Each point has `time`, `done`, `failed`, and `threads`:
+
+- `done` and `failed` add up over the step.
+- `threads` is the peak of the total threads of the connected workers in the step. The `60s` range has no thread peak.
+- The last point is the current minute or second, and it grows while the period runs.
+
+For a custom window, give two RFC 3339 times instead of `range`:
+
+```bash
+curl -H "Authorization: Bearer $WEB_TOKEN" \
+  "http://127.0.0.1:7420/api/v1/metrics?from=2026-11-03T14:10:00Z&until=2026-11-03T14:25:00Z"
+```
+
+- The window is at most 60 days, and `until` must be after `from`.
+- The step is the smallest of 1, 5, 10, 15, 30, 60, 120, 240, 480, 720, or 1,440 minutes that gives at most 120 points.
+- The reply has `"range": "custom"`, `from`, and `until`.
+
+Ranges longer than 24 hours read the saved minutes. `METRICS_RETENTION` sets how long they stay. See [Operations](/docs/server/operations#metrics).
+
+## Queues
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEB_TOKEN" http://127.0.0.1:7420/api/v1/queues/mailers/pause
+
+curl -X POST -H "Authorization: Bearer $WEB_TOKEN" http://127.0.0.1:7420/api/v1/queues/mailers/resume
+
+curl -X DELETE -H "Authorization: Bearer $WEB_TOKEN" http://127.0.0.1:7420/api/v1/queues/mailers/jobs
+```
+
+- Pause and resume reply `{"queue": "mailers"}`.
+- Delete replies `{"deleted": n}`. It deletes only the waiting jobs. A paused queue stays paused.
+- Jobs per minute is the average of the last 5 complete minutes.
+
+## Jobs
+
+`GET /api/v1/jobs` returns one page of jobs:
+
+```bash
+curl -H "Authorization: Bearer $WEB_TOKEN" \
+  "http://127.0.0.1:7420/api/v1/jobs?set=dead&limit=50&jobtype=email"
+```
+
+| Parameter | Meaning |
+|---|---|
+| `set` | `retries`, `scheduled`, `dead`, `working` (running jobs), `waiting` (the waiting jobs of all queues, oldest first), or `queue:<name>` (the waiting jobs of one queue, in queue order) |
+| `limit` | 1 to 200. The default is 50. |
+| `cursor` | The `next_cursor` of the page before |
+| `queue` | Only jobs of this queue, exactly |
+| `jobtype` | Only jobs whose type contains this text. It also matches `custom.wrapped`, the class that a wrapper job, such as an Active Job job, runs. |
+| `worker` | Only jobs that this worker id runs, exactly |
+
+The reply has `jobs` and `next_cursor`. `next_cursor` is blank on the last page.
+
+- Each job has `group`, the same value that `/jobs/groups` returns.
+- A waiting job has `enqueued_at`.
+- A running job has `worker` and `started_at`, and `at` is the end of its reservation.
+
+With a filter, one page reads at most 5,000 jobs. So a page can have fewer jobs than `limit`, or none, and still have a `next_cursor`. Read pages until `next_cursor` is blank.
+
+### Groups
+
+`GET /api/v1/jobs/groups?set=retries` groups the jobs of a set by cause. A group is the job type plus the error type and message, with numbers and long hex ids removed. So `timeout after 30s` and `timeout after 31s` are one group.
+
+The reply has `groups`, each with `group`, `count`, and `latest`, the newest job of the group. The scan stops at 10,000 jobs, and the reply then has `"truncated": true`.
+
+### Actions
+
+`POST /api/v1/jobs/actions` changes jobs of a set:
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEB_TOKEN" \
+  -d '{"action": "requeue", "set": "retries", "group": "9f2ca17e04d1"}' \
+  http://127.0.0.1:7420/api/v1/jobs/actions
+```
+
+More bodies:
+
+```json
+{"action": "kill", "set": "retries", "jids": ["a", "b"]}
+{"action": "discard", "set": "dead", "all": true}
+{"action": "kill", "set": "working", "all": true, "queue": "media"}
+```
+
+| Key | Meaning |
+|---|---|
+| `action` | `requeue` (run again now), `kill` (move to the dead set), or `discard` (delete) |
+| `set` | `retries`, `scheduled`, `dead`, or `working` |
+| `jids`, `group`, or `all` | Which jobs change. One of them is required, so an empty body never changes every job. |
+| `queue`, `jobtype`, `worker` | Optional filters, the same as in the job list |
+
+The reply is `{"changed": n}`.
+
+### Kill a running job
+
+The `working` set accepts only `kill`. The job goes to the dead set with the failure `Killed: Killed while it ran`, and its throttle place is free again. In a batch, it counts as failed.
+
+The server does not stop the worker process. The worker can still run the code to its end, but its result for the job then fails with `job is not reserved`. Use kill to free a stuck job, or to stop a job that must not run again.
+
+### Push a job
+
+`POST /api/v1/jobs` takes a job payload, with the wire field names:
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEB_TOKEN" \
+  -d '{"jobtype": "email.welcome", "args": ["ana@example.com"], "queue": "default"}' \
+  http://127.0.0.1:7420/api/v1/jobs
+```
+
+The reply has status 201 and `{"jid": "..."}`. Without a `jid` in the body, the server makes one that starts with `web-`. A job that a unique lock blocks, or a `jid` that exists, gets status 409.
+
+## Workers
+
+`GET /api/v1/workers` lists the worker processes, with hostname, pid, tag, queues, threads, busy count, start time, and last beat. Each worker also has:
+
+| Key | Meaning |
+|---|---|
+| `concurrency` | The threads that it runs now |
+| `wanted` | The count that it gets at its next beat, or `null` |
+| `scalable` | `true` when it can change its threads |
+| `max_concurrency` | Its limit, or `null` |
+| `autoscale` | `{"min", "max"}`, or `null` |
+| `saved` | `true` when it runs on a saved setting |
+
+`PATCH /api/v1/workers/{wid}` changes the threads, the autoscale, or both:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer $WEB_TOKEN" \
+  -d '{"autoscale": {"min": 4, "max": 40}}' \
+  http://127.0.0.1:7420/api/v1/workers/<wid>
+```
+
+More bodies:
+
+```json
+{"concurrency": 12}
+{"autoscale": {"max": 40}}
+{"autoscale": false}
+{"reset": true}
+```
+
+- The reply is the worker. The worker gets the change at its next beat, up to 15 seconds later.
+- The server saves the change for the worker name, which is the hostname and the tag. A new process with that name starts with the saved setting, also after a server restart.
+- `{"reset": true}`, alone in the body, deletes the saved setting and brings back the config of the worker.
+- A missing `min` is the count that the worker started with.
+- With autoscale on, `concurrency` must be between `min` and `max`.
+
+| Status | When |
+|---|---|
+| 400 | A count outside 1 to 1000 or above `max_concurrency`, `min` above `max`, a body with no field, or `reset` with another field |
+| 404 | No worker has this `wid` |
+| 409 | The worker does not report its threads, for example a Faktory client |
+
+A worker reports its threads only if its client sends them. A client that does not send them counts as 0 threads. See [Autoscale](/docs/concepts/autoscale).
+
+## Topics
+
+`GET /api/v1/topics` lists each topic with its subscriptions. Each subscription has its queue, job type, `retry`, `reserve_for`, `created_at`, and `workers`: the connected workers that fetch from its queue, with `wid`, `hostname`, `pid`, `tag`, and `labels`. See [Topics](/docs/concepts/topics).
+
+## Schedules
+
+`GET /api/v1/schedules` returns `cron` and `throttles`:
+
+- Each cron entry has `schedule`, `jobtype`, `queue`, and `next`.
+- Each throttle has `queue`, `concurrency`, `worker`, `timeout_seconds`, and `in_use`.
+
+See [Configuration](/docs/server/configuration#yaml-settings) to set them.
+
+## Batches
+
+`GET /api/v1/batches` lists up to 200 batches. See [Batches](/docs/concepts/batches).

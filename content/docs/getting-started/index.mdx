@@ -1,0 +1,298 @@
+---
+title: Quickstart
+description: Start an Anway server, push a job, and run it with a worker.
+---
+
+In this guide, you start one Anway server on your computer. Then you push one job and run it with a worker in Ruby, Go, or Node.js.
+
+The job in this guide has the event `email.welcome` and one argument, an email address. All three languages use the same event name, so a job that one language pushes can run in a worker of another language.
+
+<Steps>
+
+<Step>
+
+### Start the server
+
+Use one of these three ways. Each one starts the server on port 7419.
+
+<Tabs items={['Docker', 'Binary', 'Ruby gem']}>
+
+<Tab value="Docker">
+
+```bash
+docker run -d --name anway \
+  -p 7419:7419 \
+  -e SERVER_PASSWORD=change-me \
+  -v anway-data:/data \
+  ghcr.io/thadeu/anway:0.5.1
+```
+
+The image listens on all addresses, so it needs a password. Tell the clients the password with `ANWAY_URL`. Set it in each terminal where you run a client:
+
+```bash
+export ANWAY_URL=tcp://:change-me@localhost:7419
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+Download the archive for your platform from the [GitHub release](https://github.com/thadeu/anway/releases/tag/v0.5.1). This example is for macOS on Apple silicon:
+
+```bash
+curl -fsSLO https://github.com/thadeu/anway/releases/download/v0.5.1/anway-v0.5.1-darwin-arm64.tar.gz
+
+tar -xzf anway-v0.5.1-darwin-arm64.tar.gz
+
+./anway-v0.5.1-darwin-arm64/anway
+```
+
+The server listens on `127.0.0.1:7419` and keeps its data in `./data`. On a loopback address, it needs no password. The clients use `tcp://127.0.0.1:7419` when `ANWAY_URL` is not set.
+
+</Tab>
+
+<Tab value="Ruby gem">
+
+The `anway` gem for your platform contains the server binary. Make a folder for the project, and add the gem:
+
+```bash
+bundle init
+
+bundle add anway
+
+bundle exec anway server
+```
+
+The server listens on `127.0.0.1:7419` and keeps its data in `storage/anway`. The clients use this address when `ANWAY_URL` is not set.
+
+In a Rails app, `bin/dev` starts the server with Puma. See [Ruby and Rails](/docs/ruby).
+
+</Tab>
+
+</Tabs>
+
+The log shows `server started` with the address and the data directory. Keep the server running, and open a new terminal for the next steps.
+
+</Step>
+
+<Step>
+
+### Install a client
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+
+<Tab value="Ruby">
+
+Ruby 3.4 or later. If you started the server with the gem, use the same folder and skip this step.
+
+```bash
+bundle init
+
+bundle add anway
+```
+
+</Tab>
+
+<Tab value="Go">
+
+Go 1.26 or later.
+
+```bash
+go mod init example.com/welcome
+
+go get github.com/thadeu/anway-go
+```
+
+</Tab>
+
+<Tab value="Node.js">
+
+Node 24 or later, or Bun 1.2 or later.
+
+```bash
+pnpm add @anway/client
+```
+
+</Tab>
+
+</Tabs>
+
+</Step>
+
+<Step>
+
+### Push a job and run it
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+
+<Tab value="Ruby">
+
+Declare the job in a class. `event` is the name that the server and the other languages see.
+
+```ruby title="jobs.rb"
+require 'anway'
+
+class WelcomeEmail
+  include Anway::Worker
+
+  anway_options event: 'email.welcome'
+
+  def perform(address)
+    puts "Welcome email to #{address}"
+  end
+end
+```
+
+Push one job:
+
+```ruby title="push.rb"
+require_relative 'jobs'
+
+WelcomeEmail.perform_async('ana@example.com')
+```
+
+```bash
+bundle exec ruby push.rb
+```
+
+Start a worker. `-r` names the file that loads the job classes:
+
+```bash
+bundle exec anway worker -r ./jobs.rb
+```
+
+</Tab>
+
+<Tab value="Go">
+
+This program pushes one job, and then runs a worker until you press Ctrl-C.
+
+```go title="main.go"
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+
+	anway "github.com/thadeu/anway-go"
+)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+
+	defer stop()
+
+	client, err := anway.Open("", anway.ClientOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer client.Close()
+
+	job, err := anway.NewJob("email.welcome", []any{"ana@example.com"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := client.Push(ctx, job); err != nil {
+		log.Fatal(err)
+	}
+
+	worker := anway.NewWorker("", anway.WorkerOptions{})
+
+	worker.On("email.welcome", func(ctx context.Context, job *anway.Job) error {
+		var address string
+
+		if err := job.Bind(&address); err != nil {
+			return err
+		}
+
+		log.Printf("Welcome email to %s", address)
+
+		return nil
+	})
+
+	if err := worker.Run(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+```bash
+go run .
+```
+
+A blank URL in `Open` and `NewWorker` uses `ANWAY_URL`.
+
+</Tab>
+
+<Tab value="Node.js">
+
+Push one job:
+
+```ts title="push.mjs"
+import Anway from '@anway/client';
+
+const client = new Anway.Client();
+
+await client.push(new Anway.Job('email.welcome', ['ana@example.com']));
+
+client.close();
+```
+
+```bash
+node push.mjs
+```
+
+Start a worker:
+
+```ts title="worker.mjs"
+import Anway from '@anway/client';
+
+const worker = new Anway.Worker();
+
+worker.on('email.welcome', async job => {
+  const [address] = job.args;
+
+  console.log(`Welcome email to ${address}`);
+});
+
+await worker.run();
+```
+
+```bash
+node worker.mjs
+```
+
+</Tab>
+
+</Tabs>
+
+The worker prints `Welcome email to ana@example.com`. It continues to run and waits for more jobs. Press Ctrl-C to stop it.
+
+</Step>
+
+</Steps>
+
+## What happened
+
+1. The client sent the job to the server with the `PUSH` command. The server wrote the job to disk before it replied.
+2. The worker fetched jobs from the `default` queue, because the job has no other queue.
+3. The handler returned with no error, so the worker acknowledged the job and the server removed it.
+
+If a handler raises an error, the server retries the job later. Delivery is at least once, so make each handler safe to run more than one time.
+
+## Mix languages
+
+The server sees only the event name and the arguments. So you can push the job from Ruby and run it in the Go worker, or push it from Node.js and run it in the Ruby worker. Start the worker of one tab and push with the code of another tab.
+
+## Next steps
+
+<Cards>
+  <Card title="Ruby and Rails" href="/docs/ruby" description="Workers, Active Job, the Puma plugin, and tests." />
+  <Card title="Go" href="/docs/go" description="The Go client and worker." />
+  <Card title="Node.js and Bun" href="/docs/nodejs" description="The TypeScript client and worker." />
+  <Card title="Concepts" href="/docs/concepts" description="Jobs, queues, retries, topics, and batches." />
+</Cards>

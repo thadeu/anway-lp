@@ -1,0 +1,101 @@
+---
+title: Operations
+description: What the server promises about your jobs, and how to back it up, upgrade it, and size its disk.
+---
+
+This page is for the person who runs Anway in production. It tells what the server keeps safe, how to make and restore a backup, how to upgrade, and what uses disk and memory.
+
+## Durability
+
+- When the server replies `OK` to a command, the change is on disk. It survives a crash of the process, also `kill -9`.
+- Each change of a job is one transaction, and each commit syncs to disk.
+- Running jobs are on disk too. A restart does not lose a job that a worker runs.
+- After a crash, the server recovers with no manual steps. At start, it opens the data file and continues. A reservation that ended while the server was down counts as a failed job, so the job goes to retry.
+
+The test suite stops a real server with `SIGKILL` under load, and checks that no confirmed job is lost.
+
+## Delivery
+
+Delivery is at least once. A job can run more than one time, for example when a worker stops before it reports the result. Make each handler idempotent: a second run must have no bad effect.
+
+A worker holds a job for `reserve_for` seconds. The default is 1800, and the minimum is 60. A job that does not report in this time counts as failed, and the server retries it.
+
+## One server
+
+Run one server for each set of queues. Two servers cannot share one data file, and the server has no replication or high availability yet.
+
+- In Docker or Kubernetes, run one replica.
+- With more than one server, each server pushes the cron jobs, and the servers have separate queues.
+
+## Backups
+
+Send `SIGUSR1` to write a consistent snapshot of the data:
+
+```bash
+kill -USR1 <pid>
+```
+
+- The snapshot goes to `BACKUP_DIR`. The default is `$DATA_DIR/backups`.
+- The file name has the UTC time, such as `jobs-20261103T141000.000000000.db`.
+- The file appears only when it is complete.
+- The log shows `backup finished` with the path, or `backup failed` with the error.
+
+In Docker, use `docker kill -s USR1 anway`.
+
+Rules for backups:
+
+- Keep backups on a different disk. The default directory is on the data disk.
+- The server does not delete old snapshots. Delete them yourself.
+- A snapshot holds a long read, so the data file can grow while it runs.
+- Jobs pushed after the snapshot are not in it.
+
+### Restore
+
+1. Stop the server.
+2. Replace `$DATA_DIR/jobs.db` with the snapshot file.
+3. Start the server.
+
+## Upgrades
+
+The server and the official clients have the same version number, and a client and a server with the same version are tested together.
+
+1. Make a backup.
+2. Upgrade the server. Jobs stay on disk during the restart, and the workers reconnect and fetch again.
+3. Upgrade the clients.
+
+A client also works with an older server, but a feature that needs a new command needs a server that has it. So upgrade the server first.
+
+The data file has a schema version. The server does not open a file from a newer schema. Keep the backup from step 1 if you must go back to an older server.
+
+Settings that an operator saves for a worker, such as its threads or autoscale, stay across a restart.
+
+## Shutdown
+
+At `SIGTERM` or `SIGINT`, the server stops giving out jobs, and running jobs get up to `SHUTDOWN_TIMEOUT` (30 seconds) to report. Give your process manager a longer stop timeout, such as 35 seconds. See [Run the server](/docs/server#shutdown).
+
+## Disk
+
+All data is in one file, `jobs.db`, in the data directory.
+
+- The file does not get smaller when jobs complete. The server uses the free pages again for new jobs.
+- So the file size follows the largest backlog that the server had, not the current one.
+- A long read, such as a backup, can make the file grow under write load.
+
+As one example, a backlog of 2 million small jobs used a 1.3 GB file on a development machine. This is not a production benchmark.
+
+The dead set has no age or size limit. Dead jobs stay until you discard them in the [console](/docs/server/console) or with the [HTTP API](/docs/server/http-api#actions). A committed batch that never finishes also stays.
+
+## Memory
+
+Job data stays on disk, not in memory. The design goal is that memory use does not grow with the number of waiting jobs.
+
+The operating system keeps parts of the data file in its page cache. This memory appears in RSS, but the system can take it back. To see what the server itself uses, measure its anonymous memory.
+
+## Metrics
+
+The [HTTP API](/docs/server/http-api#metrics) and the console show done and failed jobs over time.
+
+- The server keeps the last 24 hours in memory.
+- It saves each changed minute once a minute and at shutdown, and loads the last 24 hours at start.
+- After `SIGKILL`, only the current minute is lost. Seconds are not saved.
+- `METRICS_RETENTION` sets how long saved minutes stay, from `1h` to `60d`. The default is `24h`. Set it to `60d` to use the `7d`, `30d`, and `60d` chart ranges in full.

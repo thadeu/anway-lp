@@ -1,0 +1,146 @@
+---
+title: How Anway works
+description: An app pushes a job to a queue, the server keeps it on disk, and a worker fetches it and reports the result.
+---
+
+Read this page to learn the parts of Anway and how a job moves between them. The other pages in this section explain each part in detail.
+
+## The flow
+
+```text
+ app (producer)              Anway server                       worker
+ --------------              ------------                       ------
+ PUSH email.send  ───────>   writes the job to disk
+                             queue "default": [ job ]
+                  <───────   OK
+                                                    <───────    FETCH default
+                             reserves the job       ───────>    job JSON
+                                                                runs the handler
+                                                    <───────    ACK  (success)
+                             removes the job                    or
+                                                    <───────    FAIL (error)
+                             schedules a retry
+```
+
+1. An app pushes a job. A job has a type, such as `email.send`, args, and a queue.
+2. The server writes the job to disk before it replies `OK`. After that reply, the job survives a crash of the server, also `kill -9`.
+3. A worker fetches from a list of queues. The server gives it the oldest job of the first queue that has one, and reserves the job for that worker.
+4. The worker runs the handler for the job type.
+5. On success, the worker sends `ACK`, and the server removes the job.
+6. On an error, the worker sends `FAIL`. The server puts the job in the Retries set and runs it again later. When no retries remain, the job goes to the Dead set.
+
+A producer and a worker can use different languages. For example, a Rails app pushes `email.send`, and a Go worker runs it.
+
+## A short example
+
+Push a job from one app:
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.push('email.send', ['a@b.com'], queue: 'mailers')
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("email.send", []any{"a@b.com"}, anway.Options{Queue: "mailers"})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+import Anway from '@anway/client';
+
+const client = new Anway.Client();
+
+await client.push(new Anway.Job('email.send', ['a@b.com'], { queue: 'mailers' }));
+```
+
+</Tab>
+</Tabs>
+
+Run it in a worker in any language:
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+class SendEmail
+  include Anway::Worker
+
+  anway_options event: 'email.send', queue: 'mailers'
+
+  def perform(address)
+    # ...
+  end
+end
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{Queues: []string{"mailers"}})
+
+worker.On("email.send", func(ctx context.Context, job *anway.Job) error {
+	var address string
+
+	if err := job.Bind(&address); err != nil {
+		return err
+	}
+
+	return send(ctx, address)
+})
+
+return worker.Run(ctx)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+import Anway from '@anway/client';
+
+const worker = new Anway.Worker({ queues: ['mailers'] });
+
+worker.on<[string]>('email.send', async (job, { signal }) => {
+  const [address] = job.args;
+
+  await sendEmail(address, { signal });
+});
+
+await worker.run();
+```
+
+</Tab>
+</Tabs>
+
+## Main rules
+
+- **Disk, not memory.** Job data stays on disk. A large backlog does not use more memory.
+- **At least once.** The server can deliver a job more than one time, for example after a worker crash. Make each handler idempotent.
+- **Reservations.** A fetched job has a reservation of `reserve_for` seconds (default 1800). If the worker does not send `ACK` or `FAIL` in that time, the server treats the job as failed.
+- **One server.** All apps and workers connect to the same server over TCP, on port 7419 by default.
+
+## The parts
+
+<Cards>
+  <Card title="Jobs" href="/docs/concepts/jobs" description="Job fields and job states." />
+  <Card title="Queues" href="/docs/concepts/queues" description="Names, fetch order, pause, and throttles." />
+  <Card title="Retries" href="/docs/concepts/retries" description="Backoff, the Retries set, the Dead set, and requeue." />
+  <Card title="Scheduled jobs" href="/docs/concepts/scheduled-jobs" description="Run a job later with at, or on a cron schedule." />
+  <Card title="Unique jobs" href="/docs/concepts/unique-jobs" description="Block duplicate jobs, and let old jobs expire." />
+  <Card title="Bulk push" href="/docs/concepts/bulk-push" description="Push up to 1,000 jobs with one command." />
+  <Card title="Batches" href="/docs/concepts/batches" description="Run callbacks when a group of jobs is done, and track job progress." />
+  <Card title="Topics" href="/docs/concepts/topics" description="Send one event to many queues." />
+  <Card title="Autoscale" href="/docs/concepts/autoscale" description="Let the server change the threads of a worker." />
+</Cards>

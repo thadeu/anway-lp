@@ -1,0 +1,90 @@
+---
+title: Bulk push
+description: Push up to 1,000 jobs with one command and one disk write.
+---
+
+A bulk push sends many jobs with one `PUSHB` command. The server puts them in with one write. Use it to push a large list of jobs fast, for example one email for each user.
+
+## Push many jobs
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+failures = WelcomeJob.perform_bulk(users.map { |user| [user.id] })
+# => {}
+
+WelcomeJob.set(queue: 'low', at: Time.now + 300).perform_bulk([[1], [2], [3]])
+
+Anway.push_bulk([Anway::Job.new('image.resize', [1]), Anway::Job.new('image.resize', [2])])
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+jobs := make([]*anway.Job, 0, len(users))
+
+for _, user := range users {
+	job, err := anway.NewJob("email.send", []any{user.Email})
+	if err != nil {
+		return err
+	}
+
+	jobs = append(jobs, job)
+}
+
+failures, err := client.PushBulk(ctx, jobs)
+if err != nil {
+	return err
+}
+
+for jid, reason := range failures {
+	log.Printf("job %s is not in: %s", jid, reason)
+}
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const jobs = users.map(user => new Anway.Job('email.send', [user.email]));
+
+const failures = await client.pushBulk(jobs);
+
+for (const [jid, reason] of Object.entries(failures)) console.warn(jid, reason);
+```
+
+</Tab>
+</Tabs>
+
+## The result
+
+The result holds the reason for each job that the server refused, by jid. When all jobs are in, it is empty: `{}`.
+
+- A refused job does not stop the others. Examples of a refusal: a duplicate `jid`, a job that a [unique lock](/docs/concepts/unique-jobs) blocks, or a job that fails its checks, such as a bad queue name.
+- The jobs that go in are written together, in one write. After the reply, they survive a crash.
+- Each job keeps its own options: queue, `at`, retries, and custom keys.
+
+## The limit: 1,000 jobs
+
+One `PUSHB` takes at most 1,000 jobs. Each client handles a longer list in its own way:
+
+| Client | More than 1,000 jobs |
+|---|---|
+| Ruby | `perform_bulk` and `Anway.push_bulk` split the list into several `PUSHB` commands and merge the failures. `client.push_bulk` takes at most 1,000 and raises `ArgumentError` before the send. |
+| Go | `PushBulk` returns an error, and no job goes to the server. `anway.MaxBulk` is 1,000. Send the list in parts. |
+| Node.js | `pushBulk` rejects with a `RangeError`, and the client sends nothing. Send the list in parts. |
+
+When Ruby splits a long list, each `PUSHB` is its own write. If a connection error occurs after the first `PUSHB`, the jobs of the earlier commands stay in, and the gem does not send them again.
+
+## Ruby details
+
+- Each item of `perform_bulk` is the args of one job. The jobs get the options of the class and of `set`, as `perform_async` does.
+- The gem builds all jobs before the first send. An item that is not valid raises `ArgumentError`, and no job goes to the server.
+- In a database transaction, the push waits for the commit, and the result is `nil`. A rollback cancels the push.
+- `ActiveJob.perform_all_later(jobs)` sends one `PUSHB` for each 1,000 jobs. See [Active Job](/docs/ruby/active-job).
+
+<Callout type="info" title="Server version">
+`PUSHB` needs a server that has it. The Ruby gem names server v0.3.2 or later. See [Versions](/docs/reference/versions).
+</Callout>

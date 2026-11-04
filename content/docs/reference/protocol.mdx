@@ -1,0 +1,136 @@
+---
+title: Protocol
+description: The wire protocol of the Anway server, for client authors.
+---
+
+Read this page to write an Anway client in a new language, or to debug a connection. The protocol follows the [public Faktory work protocol](https://github.com/contribsys/faktory/blob/main/docs/protocol-specification.md), version 2, and adds new commands and optional fields. The full spec is [docs/dev/protocol.md](https://github.com/thadeu/anway/blob/main/docs/dev/protocol.md) in the server repository.
+
+## A short session
+
+```text
+S: +HI {"v":2}
+C: HELLO {"v":2,"hostname":"mac.local","wid":"4f1c9a","pid":4242,"labels":["go"],"concurrency":10,"queues":["default"]}
+S: +OK
+C: PUSH {"jid":"a1b2c3","jobtype":"email.send","args":["a@b.com"],"queue":"default"}
+S: +OK
+C: FETCH default
+S: $<length>
+S: {"jid":"a1b2c3","jobtype":"email.send","args":["a@b.com"],"queue":"default",...}
+C: ACK {"jid":"a1b2c3"}
+S: +OK
+C: END
+S: +OK
+```
+
+## Transport
+
+- TCP. The default port is 7419. Use TLS for a connection over a shared network.
+- A client sends one line for each command, ended with CRLF: a verb, then optional arguments, most often JSON.
+- The server replies in Redis RESP. Text is UTF-8.
+- One command runs at a time on a connection. There is no pipelining.
+- The longest command, with its payload, is 16 MB.
+- Client URLs use `tcp://` or `tcp+tls://`, with an optional password: `tcp://:password@localhost:7419`.
+
+## Handshake
+
+1. The server sends `HI` with JSON: `v` (the protocol version, `2`). With a password, it also sends `s` (a salt) and `i` (the hash iterations).
+2. The client sends `HELLO` with JSON: `v`, and `pwdhash` when the server has a password.
+3. A worker also sends `hostname`, `wid`, `pid`, and `labels`. A producer that only pushes does not need them.
+4. The server replies `OK`, or an error for a bad version or a bad password.
+
+`pwdhash` is the hex result of SHA-256 on the password plus the salt, applied `i` times.
+
+### Anway fields in HELLO
+
+A worker can send these optional fields. The web console shows them, and the server uses them for [autoscale](/docs/concepts/autoscale).
+
+| Field | Meaning |
+|---|---|
+| `concurrency` | The jobs that the worker runs at once, shown as threads. |
+| `tag` | A short name for the app or the role of the process, such as `shop`. |
+| `queues` | The queues that the worker fetches, in order. |
+| `autoscale` | `{"max": n}` or `{"min": n, "max": n}`, to start with autoscale on. `min` is `concurrency` by default. |
+| `max_concurrency` | The most threads that the worker can run, such as the size of its database pool. The server never asks for more, and lowers an autoscale max to it. |
+
+## Commands
+
+| Command | Argument | Reply |
+|---|---|---|
+| `PUSH` | Job JSON | `OK`, or an error |
+| `PUSHB` | A JSON array of up to 1,000 jobs | A JSON object with the reason for each refused job, by jid, or `{}` when all are in. See [Bulk push](/docs/concepts/bulk-push). |
+| `FETCH` | Queue names, separated by spaces | Job JSON, or null after at most 2 seconds |
+| `ACK` | `{"jid"}` | `OK` |
+| `FAIL` | `{"jid","errtype","message","backtrace"}` | `OK` |
+| `BEAT` | `{"wid","current_state","rss_kb","concurrency"}` | `OK`, or JSON with `state` (`quiet` or `terminate`), `concurrency`, or both |
+| `INFO` | None | Server data as JSON, with the `server` and `faktory` hashes |
+| `QUEUE` | `PAUSE`, `RESUME`, or `REMOVE`, then queue names or `*` | `OK` |
+| `MUTATE` | `{"cmd","target","filter"}` | `OK` |
+| `BATCH NEW` | `{"parent_bid","description","success","complete"}` | The `bid` |
+| `BATCH OPEN` | `bid` | The `bid` |
+| `BATCH COMMIT` | `bid` | `OK` |
+| `BATCH STATUS` | `bid` | Status JSON |
+| `TRACK GET` | `jid` | Track JSON |
+| `TRACK SET` | `{"jid","percent","desc","reserve_until"}` | `OK` |
+| `PUBLISH` | `{"topic","args","id","unique_for","custom"}` | `{"event","jobs","duplicate"}` |
+| `SUBSCRIBE` | `{"topic","queue","jobtype","retry","reserve_for"}` | `OK` |
+| `UNSUBSCRIBE` | `{"topic","queue","jobtype"}` | `OK` |
+| `FLUSH` | None | `OK`. It deletes all data. It is off unless the server has `ALLOW_FLUSH=true`. |
+| `END` | None | `OK`, then the server closes the connection |
+
+- `FETCH` needs a worker connection: a `HELLO` with a `wid`. With no queue names, it fetches from `default`.
+- `ACK` or `FAIL` for a job that is not reserved returns an error. This can occur after the reservation expired.
+- `MUTATE` takes `cmd` (`kill`, `discard`, `requeue`, or `clear`), `target` (`retries`, `scheduled`, or `dead`), and an optional `filter` with `jobtype`, `jids`, and `regexp`. `regexp` is a glob with `*` and `?`, matched against the job JSON.
+
+## Errors
+
+| Reply | When |
+|---|---|
+| `-ERR <message>` | The command failed, for example a bad job, a duplicate `jid`, or an unknown command. |
+| `-NOTUNIQUE Job not unique` | A [unique lock](/docs/concepts/unique-jobs) blocks the `PUSH`. |
+
+## Job payload
+
+| Field | Required | Default | Note |
+|---|---|---|---|
+| `jid` | Yes | | Globally unique, 1 to 256 bytes. The client makes it. |
+| `jobtype` | Yes | | Tells the worker what to run. |
+| `args` | Yes | | JSON array. `null` becomes `[]`. |
+| `queue` | No | `default` | |
+| `reserve_for` | No | 1800 | Seconds. Minimum 60. |
+| `at` | No | Now | RFC 3339 |
+| `retry` | No | 25 | `0` discards a failed job. `-1` sends it to the Dead set. |
+| `backtrace` | No | 0 | Lines to keep |
+| `created_at` | No | Server time | |
+| `custom` | No | | JSON hash |
+| `enqueued_at` | Read-only | | Set by the server |
+| `failure` | Read-only | | Set by the server |
+
+The server reads these `custom` keys: `expires_at`, `expires_in`, `unique_for`, `unique_until`, `on_dead`, `bid`, and `track`. It sets `_bid` and `_cb` on batch callback jobs. See [Jobs](/docs/concepts/jobs#custom-keys-with-a-meaning).
+
+## Anway extensions
+
+Anway adds features only as new commands and optional fields. It does not change the behavior of the existing commands, so a Faktory client works as before. See [Faktory clients](/docs/reference/faktory).
+
+### Topics
+
+`PUBLISH`, `SUBSCRIBE`, and `UNSUBSCRIBE`. See [Topics](/docs/concepts/topics).
+
+### Worker threads
+
+1. A worker that can change its threads sends its current count in each `BEAT` as `concurrency`. A worker that does not send it never gets a change.
+2. When the wanted count differs from the reported count, the `BEAT` reply has `{"concurrency": n}`. The reply has `state` only for `quiet` or `terminate`, so a client that reads only `state` is not affected.
+3. The worker starts or stops threads. A thread that stops first finishes its job. The worker then sends a `BEAT` with the new count at once. The server replies `OK`, and does not run autoscale on a `BEAT` that only confirms a change.
+
+A client must read `state` and `concurrency` apart, because a reply can have one, the other, or both.
+
+## Client rules
+
+An Anway client follows these rules, from [docs/dev/clients.md](https://github.com/thadeu/anway/blob/main/docs/dev/clients.md):
+
+- The client makes the `jid` and the `wid`.
+- The client reads the server address from `ANWAY_URL`.
+- `quiet` stops fetching. The worker stays alive and continues to beat.
+- `terminate`, or a local stop, gives running jobs a shutdown timeout, then cancels them, then gives a short grace time. After that, the worker fails the jobs that still run.
+- A worker does not cancel a fetch in progress, because the reply can hold a job.
+- The client passes the [conformance scenarios](https://github.com/thadeu/anway/blob/main/conformance/scenarios.md) against a real server before a release.
+- The client takes the shared option names of the [input contract](/docs/reference/versions#input-contract).

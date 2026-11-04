@@ -1,0 +1,153 @@
+---
+title: Unique jobs
+description: Block a duplicate job for a time, and let a job expire when it waits too long.
+---
+
+A unique job blocks a second job with the same type, queue, and args for a time that you set. Use it for work that must not run two times at once, such as a sync of one account. An expiring job is discarded when it waits longer than you allow. Use it for work that has no value after a time, such as a cache refresh.
+
+## Push a unique job
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+begin
+  Anway.push('account.sync', [42], unique_for: 600)
+rescue Anway::NotUnique
+  warn('sync of account 42 is already waiting')
+end
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("account.sync", []any{42}, anway.Options{UniqueFor: 10 * time.Minute})
+if err != nil {
+	return err
+}
+
+err = client.Push(ctx, job)
+
+if errors.Is(err, anway.ErrNotUnique) {
+	log.Println("sync of account 42 is already waiting")
+
+	return nil
+}
+
+return err
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+try {
+  await client.push(new Anway.Job('account.sync', [42], { uniqueFor: 600 }));
+} catch (error) {
+  if (!(error instanceof Anway.NotUniqueError)) throw error;
+
+  console.warn('sync of account 42 is already waiting');
+}
+```
+
+</Tab>
+</Tabs>
+
+In a Ruby worker class, put the key in `anway_options` or `set`:
+
+```ruby
+SyncAccount.set(unique_for: 600).perform_async(42)
+```
+
+## How the lock works
+
+| Option | Wire field | Meaning |
+|---|---|---|
+| `unique_for` | `custom.unique_for` | Seconds that the lock lasts. Ruby and Node.js take seconds, and Go takes a `time.Duration`. |
+| `unique_until` | `custom.unique_until` | When the server releases the lock early: `success` (the default) or `start`. |
+
+- The lock key is the job type, the queue, and the args. A job with other args, or in another queue, is not blocked.
+- The lock starts at the push and lasts `unique_for` seconds. For a [scheduled job](/docs/concepts/scheduled-jobs), it starts at the `at` time.
+- While the lock is held, a push of the same job fails with a not-unique error: `Anway::NotUnique` in Ruby, `anway.ErrNotUnique` in Go, and `NotUniqueError` in Node.js. On the wire, the reply is `-NOTUNIQUE Job not unique`.
+- With `unique_until: success`, the server releases the lock when the job gets its `ACK`. A failure does not release the lock. It stays until the `ACK` of a retry, or until the time ends.
+- With `unique_until: start`, the server releases the lock when a worker fetches the job. A new push of the same job can then go in while the first one runs.
+- When `unique_for` ends, the lock ends, also if the job still waits or runs.
+- In a [bulk push](/docs/concepts/bulk-push), a job that a lock blocks is refused, and the other jobs go in.
+- The HTTP API answers `409` for a job that a lock blocks.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.push('account.sync', [42], unique_for: 600, unique_until: 'start')
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("account.sync", []any{42}, anway.Options{
+	UniqueFor:   10 * time.Minute,
+	UniqueUntil: "start",
+})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.push(new Anway.Job('account.sync', [42], { uniqueFor: 600, uniqueUntil: 'start' }));
+```
+
+</Tab>
+</Tabs>
+
+## Expiring jobs
+
+An expiring job has a time limit. If a worker fetches it after that time, the server discards it, and the worker never gets it.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.push('cache.refresh', ['home'], expires_in: 600)
+Anway.push('cache.refresh', ['home'], expires_at: Time.now + 600)
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("cache.refresh", []any{"home"}, anway.Options{ExpiresIn: 10 * time.Minute})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.push(new Anway.Job('cache.refresh', ['home'], { expiresIn: 600 }));
+await client.push(new Anway.Job('cache.refresh', ['home'], { expiresAt: new Date(Date.now() + 600_000) }));
+```
+
+</Tab>
+</Tabs>
+
+| Option | Wire field | Meaning |
+|---|---|---|
+| `expires_in` | `custom.expires_in` | Seconds after the push. The server changes it to `expires_at` at the push. |
+| `expires_at` | `custom.expires_at` | A time, sent as RFC 3339. |
+
+- The server checks the time when a worker fetches the job. A job that expired is deleted, and the server takes the next job of the queue.
+- An expired job releases its unique lock.
+- An expired job that is in a [batch](/docs/concepts/batches) stays pending in that batch, so its `success` callback does not fire.

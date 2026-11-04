@@ -1,0 +1,113 @@
+---
+title: Testing
+description: Test the jobs and events of your app with Anway::Testing, with no server.
+---
+
+`Anway::Testing` replaces the server in the tests of your app. In fake mode, the gem keeps pushed jobs and published events in lists. In inline mode, it runs each job at push. No server is necessary.
+
+```ruby
+require 'anway/testing'
+
+Anway::Testing.fake!
+
+WelcomeJob.perform_async(1)
+
+Anway::Testing.jobs.size
+# => 1
+
+Anway::Testing.drain
+```
+
+## Modes
+
+| Method | Effect |
+|---|---|
+| `Anway::Testing.fake!` | Keeps each pushed job in `Anway::Testing.jobs`, and each published event in `Anway::Testing.events`. |
+| `Anway::Testing.inline!` | Runs each job at push, and each event in the subscribed classes of the app at publish. |
+| `Anway::Testing.disable!` | Uses the real client again. |
+
+The other methods:
+
+| Method | Effect |
+|---|---|
+| `Anway::Testing.jobs` | The fake jobs, as `Anway::Job` objects, with `type`, `args`, `queue`, and `custom`. |
+| `Anway::Testing.events` | The fake events, as the `PUBLISH` payload, with string keys. |
+| `Anway::Testing.drain` | Runs and removes all fake jobs. Jobs that they push also run. |
+| `Anway::Testing.clear` | Empties `jobs` and `events`. |
+| `Anway::Testing.mode` | `:fake`, `:inline`, or `nil`. |
+
+Each job goes through a JSON round trip, as on the server. So a job in the test gets the same args as in production.
+
+In fake and inline mode, a push does not wait for the commit of a database transaction.
+
+## Set up RSpec
+
+```ruby title="spec/support/anway.rb"
+require 'anway/testing'
+
+RSpec.configure do |config|
+  config.before do
+    Anway::Testing.fake!
+    Anway::Testing.clear
+  end
+end
+```
+
+```ruby title="spec/jobs/welcome_job_spec.rb"
+RSpec.describe WelcomeJob do
+  it 'pushes one job to the mailers queue' do
+    WelcomeJob.perform_async(42)
+
+    job = Anway::Testing.jobs.last
+
+    expect(job.type).to eq('WelcomeJob')
+    expect(job.args).to eq([42])
+    expect(job.queue).to eq('mailers')
+  end
+end
+```
+
+## Bulk pushes
+
+`perform_bulk` and `Anway.push_bulk` work as single pushes do. Fake mode adds each job to `Anway::Testing.jobs`, and inline mode runs each job. No job is refused, so the result is `{}`.
+
+```ruby
+Anway::Testing.fake!
+
+WelcomeJob.perform_bulk([[1], [2], [3]])
+# => {}
+
+Anway::Testing.jobs.map(&:args)
+# => [[1], [2], [3]]
+```
+
+## Topics
+
+In fake mode, `Anway::Testing.events` keeps each event:
+
+```ruby
+Anway::Testing.fake!
+
+Anway.publish('chat.message', [{ 'body' => 'hi' }], id: 'msg-42')
+
+Anway::Testing.events
+# => [{ "topic" => "chat.message", "args" => [{ "body" => "hi" }], "id" => "msg-42" }]
+```
+
+In inline mode, `Anway.publish` runs one copy in each job class of the app that subscribes to the topic:
+
+```ruby
+Anway::Testing.inline!
+
+Anway.publish('chat.message', [{ 'body' => 'hi' }])
+```
+
+- The copy has `custom` with `topic` and `event`, as on the server.
+- In both modes, `jobs` in the reply is the number of subscriptions in the job classes of the app.
+- There is no duplicate check.
+
+## Active Job
+
+With the Anway adapter, `perform_later` goes through the same test modes. In fake mode, the job is in `Anway::Testing.jobs` with the type `ActiveJob`. In inline mode, the job runs at once.
+
+Refer to [Active Job](/docs/ruby/active-job).

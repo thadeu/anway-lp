@@ -1,0 +1,175 @@
+---
+title: Active Job
+description: Use Anway as the Active Job adapter in Rails, and run the server and workers with Puma.
+---
+
+With the Anway adapter, your existing Active Job classes run on Anway workers. You keep `perform_later`, `retry_on`, and `perform_all_later`, and you get the Anway console, retries, and autoscale.
+
+```ruby title="config/application.rb"
+config.active_job.queue_adapter = :anway
+```
+
+```ruby title="app/jobs/publish_product_job.rb"
+class PublishProductJob < ApplicationJob
+  queue_as :default
+
+  def perform(product)
+    product.update!(status: 'processing')
+
+    product.update!(status: 'published', published_at: Time.current)
+  end
+end
+```
+
+```ruby
+PublishProductJob.perform_later(product)
+```
+
+## Set up
+
+<Steps>
+
+<Step>
+
+### Install the gem with the adapter
+
+```bash
+bundle add anway
+bin/rails generate anway:install --active-job
+```
+
+With `--active-job`, the installer adds `config.active_job.queue_adapter = :anway` to `config/application.rb`. It also writes `config/anway.yml` and `bin/anway`, and adds `plugin :anway` to `config/puma.rb`.
+
+</Step>
+
+<Step>
+
+### Start the app
+
+```bash
+bin/dev
+```
+
+</Step>
+
+</Steps>
+
+## How Active Job jobs run
+
+- Each job runs in the Rails reloader.
+- The job goes to the queue of `queue_as`.
+- The console shows the name of the job class.
+- `set(wait:)` and `set(wait_until:)` send a scheduled job.
+- A job with no `retry_on` uses the retries of the server. Refer to [Retries](/docs/concepts/retries).
+- A job with `retry_on` keeps the Active Job attempts. Its final error sends the job to the Dead set.
+
+Active Job classes and `Anway::Worker` classes can run in the same worker process.
+
+## Transactions
+
+The gem has a Railtie. When Active Record loads, a push inside a database transaction waits for the commit, and a rollback cancels it. This applies to `perform_later`, `perform_async`, `perform_bulk`, `Anway.push`, and `Anway.publish`.
+
+```ruby
+ActiveRecord::Base.transaction do
+  product = Product.create!(name: 'Lamp')
+
+  PublishProductJob.perform_later(product)
+end
+```
+
+The job goes to the server only after the commit, so the worker always finds the product.
+
+## Push many jobs
+
+`ActiveJob.perform_all_later` sends one `PUSHB` for each 1,000 jobs, for jobs of all classes and queues:
+
+```ruby
+jobs = Product.draft.map { |product| PublishProductJob.new(product) }
+
+ActiveJob.perform_all_later(jobs)
+```
+
+- A job with `set(wait:)` or `set(wait_until:)` keeps its time.
+- Each job gets `successfully_enqueued`.
+- A job that the server refused gets an `ActiveJob::EnqueueError` in `enqueue_error`.
+
+Refer to [Bulk push](/docs/concepts/bulk-push).
+
+## What the Railtie does
+
+- It registers the `:anway` adapter.
+- It makes pushes wait for the transaction commit, as above.
+- It sends pushes from the web process to the same server as the workers: the embedded one, or the url in `config/anway.yml` or `ANWAY_URL`. A url that you set in an initializer wins.
+- It uses `Rails.logger` for the gem logs.
+- It runs each job in the Rails reloader.
+- It reports job errors to `Rails.error`.
+
+## Run the server and workers in development
+
+`plugin :anway` in `config/puma.rb` runs `bin/anway` next to Puma, and stops it with Puma. In development, `bin/dev` starts Puma, so it also starts the embedded server and the workers.
+
+```ruby title="config/puma.rb"
+plugin :anway
+```
+
+- `ANWAY_IN_PUMA` turns the plugin on or off, as `SOLID_QUEUE_IN_PUMA` does for Solid Queue. It takes `true` or `false`.
+- Without `ANWAY_IN_PUMA`, the plugin runs only in development.
+- If `bin/anway` stops by itself, Puma stops too, so a broken worker is not hidden.
+
+To run the process without Puma, use `bin/anway`. For a server that runs apart, use `bin/anway worker`.
+
+### Code reloading in the worker
+
+With Solid Cable 4.1, a code reload in one job thread can deadlock with a broadcast from another job thread. To prevent it, turn off reloading in the worker process in development:
+
+```ruby title="config/environments/development.rb"
+config.enable_reloading = ENV['ANWAY_WORKER'].blank?
+```
+
+Web requests still reload as usual. After a change to a job, run `bin/rails restart`. It restarts Puma and the worker with the new code.
+
+## Database pool
+
+Each job thread can hold an Active Record connection. If the worker runs more threads than its pool, jobs fail with `ActiveRecord::ConnectionTimeoutError`. The gem protects you:
+
+- At start, the worker logs a warning when the pool is smaller than `concurrency`.
+- The worker sends its pool size to the server as its limit. The server refuses a thread count or an autoscale `max` above the limit.
+- An autoscale `max` in `config/anway.yml` above the pool goes down to the pool size, and the worker logs a warning at start.
+
+Make the pool of the worker process as large as `concurrency`, or as autoscale `max`. The worker process sets `ANWAY_WORKER=1` before Rails boots, so the web process keeps its own pool:
+
+```yaml title="config/database.yml"
+default: &default
+  adapter: sqlite3
+  max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { ENV["ANWAY_WORKER"] ? 40 : 5 } %>
+```
+
+Rails 8.1 calls the key `max_connections`. Before Rails 8.1, it is `pool`.
+
+Check the pool that the worker gets:
+
+```bash
+ANWAY_WORKER=1 bin/rails runner 'puts ActiveRecord::Base.connection_pool.size'
+```
+
+The database server must also accept the connections. For PostgreSQL, `max_connections` must hold the pool of each process.
+
+## Mount the console
+
+`Anway::Web` serves the Anway web console inside your app. Mount it only in a route that checks the user, because the console can kill and delete jobs:
+
+```ruby title="config/routes.rb"
+authenticate :user, ->(user) { user.admin? } do
+  mount Anway::Web => '/anway'
+end
+```
+
+The console needs a console binary. Set `console.path` in `config/anway.yml`, or `ANWAY_CONSOLE_PATH`. Then `bin/anway` starts the console next to the server, on `127.0.0.1:7421`. Refer to [Configuration](/docs/ruby/configuration#console) and [Console](/docs/server/console).
+
+## Move from Solid Queue
+
+Tasks in `recurring.yml` and jobs that wait in Solid Queue do not move automatically.
+
+1. Drain the old queue first.
+2. Move the recurring tasks to the cron of the server. Refer to [Server configuration](/docs/server/configuration).
+3. Set `config.active_job.queue_adapter = :anway`.

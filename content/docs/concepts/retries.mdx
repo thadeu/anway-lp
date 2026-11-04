@@ -1,0 +1,198 @@
+---
+title: Retries
+description: How the server retries a failed job, when a job goes to the Dead set, and how to run it again.
+---
+
+When a job fails, the server runs it again later, with a longer wait after each failure. You set the number of retries for each job. A job with no retries left goes to the Dead set, where you can run it again by hand.
+
+## Set the retries
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+class ChargeCard
+  include Anway::Worker
+
+  anway_options event: 'card.charge', queue: 'billing', retry: 5
+
+  def perform(order_id)
+    # ...
+  end
+end
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("card.charge", []any{order.ID}, anway.Options{
+	Queue: "billing",
+	Retry: anway.Int(5),
+})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.push(new Anway.Job('card.charge', [order.id], { queue: 'billing', retry: 5 }));
+```
+
+</Tab>
+</Tabs>
+
+| `retry` | Effect of a failure |
+|---|---|
+| Not set | The server default: 25 retries. |
+| `n` above 0 | The job goes to the Retries set. After `n` retries, the next failure sends it to the Dead set. |
+| `0` | The server discards the job. It does not go to the Dead set. |
+| `-1` | The job goes to the Dead set at once, with no retry. |
+
+## What counts as a failure
+
+- The worker sends `FAIL`. A worker does this when the handler raises an error, returns an error, or rejects. The worker also fails a job with an unknown job type.
+- The reservation expires. The worker did not send `ACK` or `FAIL` in `reserve_for` seconds, for example because it crashed.
+
+Both cases follow the same path. The server records the failure in the `failure` field of the job:
+
+| Field | Meaning |
+|---|---|
+| `retry_count` | The failures before this one. It is `0` at the first failure. |
+| `failed_at` | The time of the failure. |
+| `next_at` | The time of the next attempt. |
+| `errtype` | The error type, such as the error class. |
+| `message` | The error message. |
+| `backtrace` | The first lines of the backtrace, up to the `backtrace` field of the job. |
+
+## Backoff
+
+The wait before the next attempt grows with each failure:
+
+```text
+delay_seconds = count^4 + 15 + random(0..30) * (count + 1)
+```
+
+`count` is the `retry_count` of the failure. The random part spreads the retries of many jobs that failed at the same time.
+
+| Failure | `count` | Wait |
+|---|---|---|
+| 1st | 0 | 15 to 45 seconds |
+| 2nd | 1 | 16 to 76 seconds |
+| 6th | 5 | about 11 to 14 minutes |
+| 11th | 10 | about 2.8 to 2.9 hours |
+| 21st | 20 | about 44 hours |
+
+With the default of 25 retries, all attempts take about 3 weeks.
+
+## The Retries set
+
+A job that waits for its next attempt is in the Retries set. The server checks this set about once per second and moves each due job back to the end of its queue.
+
+## The Dead set
+
+A job with no retries left is in the Dead set. The server keeps it there until you act on it. You can:
+
+- **Requeue** the job: it goes back to its queue and runs again. It keeps its `failure` data and its retry count, so a new failure of an exhausted job sends it back to the Dead set at once.
+- **Discard** the job: the server deletes it.
+
+An event of a [topic](/docs/concepts/topics) with no subscription also goes to the Dead set. A requeue publishes the event again.
+
+## Run, kill, or discard jobs
+
+Use the web console, or the `mutate` call of a client. `mutate` works on the `retries`, `scheduled`, and `dead` sets.
+
+| Command | Effect |
+|---|---|
+| `requeue` | Moves the jobs to their queues now. |
+| `kill` | Moves the jobs to the Dead set. |
+| `discard` | Deletes the jobs. |
+| `clear` | Deletes the jobs. |
+
+A filter selects the jobs: an event (the job type), a list of jids, or a pattern. The pattern is a glob with `*` and `?`, and the server matches it against the job JSON. An empty filter selects all jobs of the set.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.client.mutate('requeue', 'retries', event: 'card.charge')
+Anway.client.mutate('discard', 'dead', jids: %w[a1b2 c3d4])
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+err := client.Mutate(ctx, "requeue", "retries", anway.Filter{Event: "card.charge"})
+if err != nil {
+	return err
+}
+
+return client.Mutate(ctx, "discard", "dead", anway.Filter{JIDs: []string{"a1b2", "c3d4"}})
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.mutate('requeue', 'retries', { event: 'card.charge' });
+await client.mutate('discard', 'dead', { jids: ['a1b2', 'c3d4'] });
+```
+
+</Tab>
+</Tabs>
+
+The **Jobs** page of the [web console](/docs/server/console) groups retries, scheduled jobs, and dead jobs by cause: the job type and the error. You can run, kill, or discard a full group. The console can also kill a running job. That job goes to the Dead set with the error `Killed`, and the worker can no longer send `ACK` or `FAIL` for it.
+
+## Death hook
+
+Give a job `on_dead` to get a notice when it dies. The server then pushes a job of the event that you name.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.push('mail.deliver', [42], retry: 15, on_dead: { event: 'mail.bounced', queue: 'rails' })
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("mail.deliver", []any{42}, anway.Options{
+	Retry:  anway.Int(15),
+	OnDead: &anway.DeadHook{Event: "mail.bounced", Queue: "rails"},
+})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.push(
+  new Anway.Job('mail.deliver', [42], { retry: 15, onDead: { event: 'mail.bounced', queue: 'rails' } })
+);
+```
+
+</Tab>
+</Tabs>
+
+- The notice job has one arg: a hash with `jid`, `jobtype`, `queue`, `args`, `failure`, and `custom` of the dead job.
+- The server pushes the notice in the same write as the death, so a crash cannot lose it.
+- The hook fires when the retries end, at `retry: -1`, and when the last reservation expires.
+- The hook does not fire for a kill from the console or from `mutate`, or for a discard.
+- The notice is a normal job with the default retries. It has no hook of its own.
+
+## Rails and Active Job
+
+The server owns the retries. An Active Job class with `retry_on` keeps its own attempts, and the adapter sends `retry: -1`, so the final error goes to the Dead set and the job does not retry two times. See [Active Job](/docs/ruby/active-job).

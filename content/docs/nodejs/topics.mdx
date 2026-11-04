@@ -1,0 +1,144 @@
+---
+title: Node.js topics
+description: Publish one event to many queues, and subscribe Node.js and Bun workers to topics.
+---
+
+A topic sends one event to many queues. `client.publish` makes one job for each subscription of the topic, in one transaction. Each copy is a normal job in the queue of its subscriber, with its own retries and Dead set. For the model, see [topics](/docs/concepts/topics).
+
+Publish one `chat.message` event:
+
+```ts
+import Anway from '@anway/client';
+
+const client = new Anway.Client();
+
+const published = await client.publish('chat.message', [{ room: 'general', body: 'hi' }], { id: 'msg-42' });
+
+console.log(published);
+// { event: 'msg-42', jobs: 3, duplicate: false }
+```
+
+Three flows subscribe to `chat.message`, each with its own event and queue. Each app declares its subscriptions in its worker, with the `topics` key of `on`. In this short example, one worker has all three:
+
+```ts
+const worker = new Anway.Worker();
+
+worker.on('chat.broadcast', async job => await broadcast(job.args[0]), {
+  queue: 'realtime',
+  topics: ['chat.message'],
+});
+
+worker.on('chat.store', async job => await store(job.custom?.event, job.args[0]), {
+  queue: 'cassandra',
+  retry: 10,
+  topics: ['chat.message', 'chat.edit'],
+});
+
+worker.on('chat.notify', async job => await notify(job.args[0]), {
+  queue: 'push',
+  reserveFor: 60,
+  topics: ['chat.message'],
+});
+
+await worker.run();
+```
+
+The publish above then makes three jobs: one in each of the `realtime`, `cassandra`, and `push` queues.
+
+## Subscribe in a worker
+
+Put the topics in the `topics` key of `worker.on`. For each topic, the worker records one subscription with these values:
+
+| Subscription field | Value |
+|---|---|
+| `topic` | The topic name. |
+| `event` | The event of the declaration. Each copy is a job with this event. |
+| `queue` | The `queue` of the declaration, or `'default'`. |
+| `retry` | The `retry` of the declaration. |
+| `reserveFor` | The `reserveFor` of the declaration, in seconds. |
+
+- `run` sends `SUBSCRIBE` for each subscription before its first fetch. `run` rejects when a subscription fails.
+- The worker adds the queue of each declaration that has topics to its queues. The worker in the example fetches from `default`, `realtime`, `cassandra`, and `push`.
+- `run` sends the subscriptions again at each start, so the worker code sets them. A second `SUBSCRIBE` with the same topic, queue, and event keeps one subscription, with the new `retry` and `reserveFor`.
+- The server saves subscriptions on disk. A copy goes to the queue also when the subscriber app is down. The copy waits in the queue until a worker fetches it.
+- To send one topic to two flows in one app, declare two events, each with the topic. A worker has one handler for each event.
+
+An event that is published before a subscription exists does not reach that subscription.
+
+## Publish
+
+`client.publish(topic, args, options)` sends an event to every subscription of the topic. Every copy gets the same args. Args must be JSON types, as for a job.
+
+```ts
+const published = await client.publish('product.created', [product], {
+  id: product.id,
+  uniqueFor: 600,
+  custom: { source: 'catalog' },
+});
+
+if (published.duplicate) {
+  console.warn(`product ${product.id} was already published`);
+}
+```
+
+All options are optional.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | `string` | The server makes one | The event id. |
+| `uniqueFor` | `number` | `86400` (server) | Seconds. With an `id`, a second publish of the same topic and id in this time makes no job. `0` turns the check off. The server maximum is 30 days. |
+| `custom` | `object` | None | Keys that go to each copy. The server adds `topic` and `event` to them. |
+
+`publish` resolves with an object:
+
+| Field | Meaning |
+|---|---|
+| `event` | The event id: your `id`, or the id that the server made. |
+| `jobs` | The number of copies, one for each subscription. |
+| `duplicate` | `true` when the same topic and id were published in `uniqueFor`. Then no job was made. |
+
+Use a stable id, such as the id of the record, when the same publish can run twice, for example after a network error. Without an `id`, the server does no duplicate check.
+
+An event with no subscription is not lost. It goes to the Dead set as one job, and the reply has `jobs: 0`. A requeue of that dead job publishes the event again to the subscriptions of that moment.
+
+### Idempotent handlers
+
+Each copy is delivered at least once. The server adds the event id to the custom hash of each copy, so use `job.custom.event` as the key for idempotence:
+
+```ts
+worker.on(
+  'chat.store',
+  async job => {
+    const eventId = String(job.custom?.event);
+
+    await store(eventId, job.args[0]);
+  },
+  { queue: 'cassandra', topics: ['chat.message'] }
+);
+```
+
+## Subscribe from any app
+
+`client.subscribe` and `client.unsubscribe` change subscriptions without a worker.
+
+```ts
+await client.subscribe({
+  topic: 'chat.message',
+  queue: 'audit',
+  event: 'chat.audit',
+  retry: 3,
+  reserveFor: 60,
+});
+```
+
+`subscribe` is idempotent. A second call with the same topic, queue, and event sets the new `retry` and `reserveFor`.
+
+## Unsubscribe
+
+`client.unsubscribe({ topic, queue, event })` removes one subscription. A missing subscription is not an error.
+
+```ts
+await client.unsubscribe({ topic: 'chat.message', queue: 'audit', event: 'chat.audit' });
+```
+
+The server keeps a subscription until you remove it. When you remove `topics` from a declaration, the worker stops sending `SUBSCRIBE`, but the old subscription stays. Call `unsubscribe` to remove it.

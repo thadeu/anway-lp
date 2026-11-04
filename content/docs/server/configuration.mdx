@@ -1,0 +1,131 @@
+---
+title: Configuration
+description: Every env var and flag of the server, and the YAML settings for cron jobs and queue throttles.
+---
+
+Configure the server in two places:
+
+- **Env vars and flags** set the address, the storage, the password, and the HTTP API. They apply at start.
+- **YAML files** in the settings directory set cron jobs and queue throttles. `SIGHUP` loads them again with no restart.
+
+```bash
+BIND_ADDR=0.0.0.0:7419 \
+SERVER_PASSWORD=change-me \
+DATA_DIR=/var/lib/anway \
+CONF_DIR=/etc/anway/conf.d \
+anway
+```
+
+## Env vars
+
+The env vars have no product prefix, so a rename of the product does not change your deployments.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `BIND_ADDR` | `127.0.0.1:7419` | Address of the work protocol. |
+| `DATA_DIR` | `./data` | Storage directory. |
+| `CONF_DIR` | `./conf.d` | Directory of the YAML settings. |
+| `SERVER_PASSWORD` | Empty | Client password. Required when `BIND_ADDR` is not a loopback address. |
+| `ALLOW_FLUSH` | `false` | Set to `true` to turn on the `FLUSH` command, which deletes all data. |
+| `TLS_CERT_FILE` | Empty | TLS certificate, as a PEM file. Set it with `TLS_KEY_FILE`. |
+| `TLS_KEY_FILE` | Empty | TLS private key, as a PEM file. Set it with `TLS_CERT_FILE`. |
+| `WEB_ADDR` | Empty | Address of the HTTP API. Empty turns the API off. |
+| `WEB_TOKEN` | Empty | Token of the HTTP API. Required when `WEB_ADDR` is not a loopback address. |
+| `METRICS_RETENTION` | `24h` | Time that saved metrics stay. From `1h` to `60d`. Accepts Go durations, such as `36h`, and days, such as `30d`. |
+| `BACKUP_DIR` | `$DATA_DIR/backups` | Directory of the backup snapshots. |
+| `SHUTDOWN_TIMEOUT` | `30s` | Longest time that running jobs get to report at shutdown. The server stops sooner when no job runs. A Go duration. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
+
+The server does not start in these cases:
+
+- `BIND_ADDR` is not a loopback address, and `SERVER_PASSWORD` is empty.
+- `WEB_ADDR` is not a loopback address, and `WEB_TOKEN` is empty.
+- Only one of `TLS_CERT_FILE` and `TLS_KEY_FILE` is set.
+- `METRICS_RETENTION`, `SHUTDOWN_TIMEOUT`, or `LOG_LEVEL` has a value that is not valid.
+
+A loopback address is `localhost`, `127.0.0.1`, or another loopback IP, such as `::1`.
+
+## Flags
+
+Flags have priority over env vars.
+
+| Flag | Env var |
+|---|---|
+| `--bind` | `BIND_ADDR` |
+| `--data-dir` | `DATA_DIR` |
+| `--conf-dir` | `CONF_DIR` |
+| `--tls-cert` | `TLS_CERT_FILE` |
+| `--tls-key` | `TLS_KEY_FILE` |
+| `--web` | `WEB_ADDR` |
+| `--version` | None |
+| `--help` | None |
+
+The other settings have no flag. The password and the token have no flag, because a process list shows flags.
+
+## YAML settings
+
+The server reads all `*.yml` and `*.yaml` files in `CONF_DIR`, in name order, and merges them. A missing directory is the same as an empty one.
+
+```yaml title="conf.d/jobs.yml"
+throttles:
+  api: { concurrency: 4, timeout: 60 }
+  bulk: { worker: 5 }
+
+cron:
+  - schedule: "*/5 * * * *"
+    job:
+      type: Cleanup
+      queue: ops
+      retry: 3
+      args: [1]
+      custom:
+        expires_in: 60
+```
+
+Rules for the files:
+
+- An unknown key is an error, so a typing error does not pass.
+- At start, an invalid file stops the server.
+- At `SIGHUP`, an invalid file does not change the settings. The old settings stay active, and the log shows `reload failed, the old settings stay active`. A good reload logs `settings reloaded`.
+- The cron lists of all files add up. For throttles, a queue in a later file replaces the same queue in an earlier file.
+
+Send `SIGHUP` to load the files again:
+
+```bash
+kill -HUP <pid>
+```
+
+### Cron
+
+Each item of `cron` pushes one job on a schedule.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `schedule` | Required | A standard five-field cron expression: minute, hour, day of month, month, and day of week. |
+| `job.type` | Required | The job type: the event that a worker handles. |
+| `job.queue` | `default` | Queue of the job. |
+| `job.args` | `[]` | Arguments of the job, as a list. |
+| `job.retry` | 25 (server default) | Retry count. `0` discards the job at the first failure. `-1` sends it to the dead set at once. |
+| `job.reserve_for` | 1800 (server default) | Seconds that a worker can hold the job. |
+| `job.custom` | None | Custom fields, such as `expires_in` or `unique_for`. |
+
+- Schedules use UTC.
+- A time that the server misses while it is down does not run later.
+- Each job gets a new id that starts with `cron-`.
+- With more than one server, each server pushes the job. Run one server only.
+
+### Throttles
+
+A throttle limits how many jobs of a queue run at the same time. The key is the queue name.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `concurrency` | None | Most running jobs of the queue, for all workers together. |
+| `worker` | None | Most running jobs of the queue, for each worker. |
+| `timeout` | `60` | Seconds. A job that does not report in this time frees its place in the throttle. |
+
+- Set `concurrency`, `worker`, or both. A throttle with neither is an error.
+- When a throttle is full, a fetch skips the queue and goes to the next queue of the worker.
+- A job frees its place when it reports success or failure.
+
+The [HTTP API](/docs/server/http-api#schedules) and the [web console](/docs/server/console) show the cron entries with their next run, and the throttles with the places in use.

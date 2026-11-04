@@ -1,0 +1,245 @@
+---
+title: Node.js and Bun
+description: Push jobs, run workers, and publish topic events from TypeScript with @anway/client.
+---
+
+The package `@anway/client` connects your Node.js or Bun app to an Anway server. Use it to push jobs, run workers, and publish events to topics. It is written in TypeScript and has its own type declarations.
+
+```ts
+import Anway from '@anway/client';
+
+const client = new Anway.Client();
+
+await client.push(new Anway.Job('email.send', ['a@b.com', 'Welcome']));
+```
+
+## Install
+
+```bash
+pnpm add @anway/client
+```
+
+- The package works on Node 24 or later, and on Bun 1.2 or later. Node and Bun use the same code.
+- It has ESM and CommonJS builds, and no runtime dependencies.
+- The current version is 0.5.1. The server and all clients use the same version number. See [versions](/docs/reference/versions).
+
+The examples use the default export:
+
+```ts
+import Anway from '@anway/client';
+```
+
+Named imports also work:
+
+```ts
+import { Client, Job, Worker } from '@anway/client';
+```
+
+## Connect
+
+`new Anway.Client(options)` creates a client. The client opens its connections at first use, not in the constructor.
+
+```ts
+const client = new Anway.Client({ url: 'tcp://:password@localhost:7419' });
+```
+
+The client finds the server address in this order:
+
+1. The `url` option.
+2. The `ANWAY_URL` environment variable, when `url` is blank.
+3. `tcp://127.0.0.1:7419`, when both are blank.
+
+The URL has one of two schemes:
+
+| Scheme | Use |
+|---|---|
+| `tcp://` | A plain TCP connection. |
+| `tcp+tls://` | A TLS connection. |
+
+Put the password in the URL as `tcp://:password@host:7419`. The client sends a hash of the password, not the password. A URL without a port uses port 7419.
+
+One client works for many concurrent callers. Create one client when the app starts, and share it. Call `client.close()` when the app stops.
+
+### Client options
+
+All options are optional.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `url` | `string` | `ANWAY_URL` | The server address. |
+| `poolSize` | `number` | `8` | The most connections that the client opens. |
+| `timeout` | `number` | `10000` | Milliseconds for each server call. |
+| `tls` | `tls.ConnectionOptions` | None | `node:tls` options for a `tcp+tls://` URL. The default `servername` is the host of the URL. |
+| `wid` | `string` | None | The worker id. A worker sets it. You need it only to call `fetch` or `beat` yourself. |
+| `labels` | `string[]` | None | The labels of a worker. A worker sets them. |
+
+### TLS
+
+Use `tcp+tls://` in the URL. To trust your own certificate authority, give `node:tls` options:
+
+```ts
+import { readFileSync } from 'node:fs';
+
+import Anway from '@anway/client';
+
+const client = new Anway.Client({
+  url: 'tcp+tls://:password@anway.internal:7419',
+  tls: { ca: readFileSync('ca.pem') },
+});
+```
+
+See [TLS](/docs/server/tls) to turn on TLS in the server.
+
+## Push a job
+
+`new Anway.Job(event, args, options)` creates a job with a new jid. `client.push(job)` sends it, and resolves with the jid.
+
+```ts
+const jid = await client.push(new Anway.Job('email.send', ['a@b.com', 'Welcome'], { queue: 'critical', retry: 5 }));
+```
+
+- The event is the name of the work. The worker that declares this event runs the job. It goes out as `jobtype`.
+- Args must be JSON types, because workers in other languages read them. A `Date`, a class instance, `undefined`, or `NaN` throws a `TypeError`. Send a date as a string.
+- `push` rejects with `Anway.NotUniqueError` when a [unique lock](/docs/concepts/unique-jobs) blocks the job.
+
+```ts
+try {
+  await client.push(new Anway.Job('sync', [42], { uniqueFor: 600 }));
+} catch (error) {
+  if (!(error instanceof Anway.NotUniqueError)) throw error;
+
+  console.warn('the job is already in a queue');
+}
+```
+
+### Push options
+
+The options are the keys of the input contract. All Anway clients use the same keys. All keys are optional.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `queue` | `string` | `'default'` | The queue of the job. |
+| `retry` | `number` | 25 (server) | The retries after a failure. `0` discards the job at the first failure. `-1` sends it to the Dead set at once. See [retries](/docs/concepts/retries). |
+| `reserveFor` | `number` | 1800 (server) | Seconds that a worker can hold the job before the server gives it again. The server minimum is 60. |
+| `backtrace` | `number` | `0` | The number of backtrace lines that the server keeps for a failure. |
+| `at` | `Date` | Now | The time to run the job. See [scheduled jobs](/docs/concepts/scheduled-jobs). |
+| `uniqueFor` | `number` | None | Seconds that a unique lock blocks a job with the same event, args, and queue. See [unique jobs](/docs/concepts/unique-jobs). |
+| `uniqueUntil` | `'success' \| 'start'` | `'success'` (server) | When the unique lock ends. |
+| `expiresIn` | `number` | None | Seconds. The server discards the job at fetch when this time after the push is past. |
+| `expiresAt` | `Date` | None | The server discards the job at fetch when this time is past. It goes out in ISO 8601. |
+| `track` | `boolean` | `false` | `true` turns on tracking, so you can read and set the progress of the job with `trackGet` and `trackSet`. |
+| `onDead` | `{ event, queue? }` | None | When the job goes to the Dead set, the server pushes a job with this event to this queue. |
+| `custom` | `object` | None | The keys of your app. They go in the `custom` hash of the job. |
+
+`uniqueFor`, `uniqueUntil`, `expiresIn`, `expiresAt`, `track`, and `onDead` also go in the `custom` hash. They win over a `custom` key with the same name. `topics` is also a key, but only for a worker. A push ignores it. See [topics](/docs/nodejs/topics).
+
+```ts
+new Anway.Job('report', [42], { queue: 'low', at: new Date(Date.now() + 60_000) });
+new Anway.Job('sync', [42], { uniqueFor: 600, uniqueUntil: 'start' });
+new Anway.Job('mail.send', ['a@b.com'], { track: true, onDead: { event: 'mail.bounced', queue: 'rails' } });
+```
+
+A job also has two helpers. `job.runAt(date)` sets the run time. `job.setCustom(key, value)` adds one custom key. Both return the job.
+
+The type `Anway.Options` describes the keys:
+
+```ts
+const mail: Anway.Options = { queue: 'mail', retry: 3 };
+
+await client.push(new Anway.Job('email.send', ['a@b.com'], mail));
+```
+
+## Push in bulk
+
+`client.pushBulk(jobs)` sends up to 1,000 jobs with one `PUSHB` command. The server saves them in one write.
+
+```ts
+const jobs = users.map(user => new Anway.Job('email.send', [user.email]));
+
+const failures = await client.pushBulk(jobs);
+
+for (const [jid, reason] of Object.entries(failures)) {
+  console.warn(`job ${jid} is not in: ${reason}`);
+}
+```
+
+- The reply has the reason for each job that is not in, by jid, such as a duplicate jid or a unique lock. It is `{}` when all jobs are in.
+- A refused job does not stop the other jobs.
+- More than 1,000 jobs reject with a `RangeError`, and the client sends nothing. Send a longer list in parts of 1,000 or less.
+
+See [bulk push](/docs/concepts/bulk-push).
+
+## Errors
+
+All errors of the package extend `Anway.AnwayError`.
+
+| Error | Meaning |
+|---|---|
+| `NotUniqueError` | A unique lock blocked the push. |
+| `ClosedError` | The client is closed. |
+| `ServerError` | The server replied with an error. It has a `code`. |
+| `ConnectionError` | The client could not reach the server, the call timed out, or no connection was free in time. |
+
+A failed call does not send again. Your app decides whether to repeat it.
+
+## Other operations
+
+The client has the operations of the Go client, in camelCase:
+
+| Group | Operations |
+|---|---|
+| Jobs | `push`, `pushBulk`, `fetch`, `ack`, `fail`, `beat`, `heartbeat` |
+| Topics | `publish`, `subscribe`, `unsubscribe` |
+| Queues | `pauseQueues`, `resumeQueues`, `removeQueues`, `queueSizes`, `info` |
+| Admin | `mutate` |
+| Batches | `batchNew`, `batchOpen`, `batchCommit`, `batchStatus` |
+| Tracking | `trackGet`, `trackSet` |
+
+See [batches](/docs/concepts/batches) and [queues](/docs/concepts/queues).
+
+## A complete program
+
+This program pushes one job, and then runs a worker for it until you stop it with Ctrl+C. Start a server first, as in the [quickstart](/docs/getting-started).
+
+```json title="package.json"
+{
+  "type": "module",
+  "dependencies": {
+    "@anway/client": "^0.5.1"
+  }
+}
+```
+
+```ts title="main.ts"
+import Anway from '@anway/client';
+
+const client = new Anway.Client();
+
+await client.push(new Anway.Job('email.send', ['a@b.com', 'Welcome'], { queue: 'mail' }));
+
+client.close();
+
+const worker = new Anway.Worker({ queues: ['mail'] });
+
+worker.on<[string, string]>('email.send', async job => {
+  const [address, subject] = job.args;
+
+  console.log(`send ${subject} to ${address}`);
+});
+
+await worker.run();
+```
+
+Run it with Node or with Bun:
+
+```bash
+ANWAY_URL=tcp://localhost:7419 node main.ts
+ANWAY_URL=tcp://localhost:7419 bun main.ts
+```
+
+## Next steps
+
+<Cards>
+  <Card title="Workers" href="/docs/nodejs/workers" description="Handlers, retries, job slots, autoscale, and shutdown." />
+  <Card title="Topics" href="/docs/nodejs/topics" description="Send one event to many queues." />
+</Cards>

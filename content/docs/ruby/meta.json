@@ -1,0 +1,10 @@
+{
+  "title": "Ruby and Rails",
+  "pages": [
+    "workers",
+    "active-job",
+    "configuration",
+    "topics",
+    "testing"
+  ]
+}

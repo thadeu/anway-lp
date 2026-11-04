@@ -1,0 +1,322 @@
+---
+title: Go
+description: Push jobs, run workers, and publish topic events from Go with the anway-go module.
+---
+
+The Go client `github.com/thadeu/anway-go` connects your Go app to an Anway server. Use it to push jobs, run workers, and publish events to topics. This client sets the contract for all Anway clients, so the other clients have the same operations and defaults.
+
+```go
+client, err := anway.Open("", anway.ClientOptions{})
+if err != nil {
+	return err
+}
+
+defer client.Close()
+
+job, err := anway.NewJob("email.send", []any{"a@b.com", "Welcome"})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+## Install
+
+The module needs Go 1.26 or later.
+
+```bash
+go get github.com/thadeu/anway-go
+```
+
+The package name is `anway`:
+
+```go
+import anway "github.com/thadeu/anway-go"
+```
+
+The current version is 0.5.1. The server and all clients use the same version number. See [versions](/docs/reference/versions).
+
+## Connect
+
+`anway.Open(url, options)` creates a client. The client opens its connections at first use, not in `Open`.
+
+```go
+client, err := anway.Open("tcp://:password@localhost:7419", anway.ClientOptions{})
+if err != nil {
+	return err
+}
+
+defer client.Close()
+```
+
+The client finds the server address in this order:
+
+1. The URL that you give to `Open`.
+2. The `ANWAY_URL` environment variable, when the URL is blank.
+3. `tcp://127.0.0.1:7419`, when both are blank.
+
+The URL has one of two schemes:
+
+| Scheme | Use |
+|---|---|
+| `tcp://` | A plain TCP connection. |
+| `tcp+tls://` | A TLS connection. |
+
+Put the password in the URL as `tcp://:password@host:7419`. The client sends a hash of the password, not the password. Always write the port in the URL.
+
+A client is safe for concurrent use. Open one client when the app starts, and share it. `Close` closes the idle connections and waits for the connections in use.
+
+### Client options
+
+All fields of `anway.ClientOptions` are optional.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `PoolSize` | `int` | `8` | The most connections that the client opens. |
+| `Timeout` | `time.Duration` | `10 * time.Second` | The time limit for each server call. |
+| `TLS` | `*tls.Config` | TLS 1.2 or later | The TLS settings for a `tcp+tls://` URL. A blank `ServerName` is the host of the URL. |
+| `WID` | `string` | None | The worker id. A worker sets it. You need it only to call `Fetch` or `Beat` yourself. |
+| `Labels` | `[]string` | None | The labels of a worker. A worker sets them. |
+
+### TLS
+
+Use `tcp+tls://` in the URL. Without a `TLS` field, the client uses the system root certificates. To trust your own certificate authority, give a `tls.Config`:
+
+```go
+caPEM, err := os.ReadFile("ca.pem")
+if err != nil {
+	return err
+}
+
+roots := x509.NewCertPool()
+roots.AppendCertsFromPEM(caPEM)
+
+client, err := anway.Open("tcp+tls://:password@anway.internal:7419", anway.ClientOptions{
+	TLS: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+})
+if err != nil {
+	return err
+}
+
+defer client.Close()
+```
+
+See [TLS](/docs/server/tls) to turn on TLS in the server.
+
+## Push a job
+
+`anway.NewJob(event, args, options...)` creates a job with a new jid. `client.Push(ctx, job)` sends it.
+
+```go
+job, err := anway.NewJob("email.send", []any{"a@b.com", "Welcome"}, anway.Options{
+	Queue: "critical",
+	Retry: anway.Int(5),
+})
+if err != nil {
+	return err
+}
+
+if err := client.Push(ctx, job); err != nil {
+	return err
+}
+```
+
+- The event is the name of the work. The worker that declares this event runs the job. It goes out as `jobtype`.
+- `args` is a list of JSON values. Workers in other languages read them, so use JSON types: strings, numbers, booleans, maps, slices, and structs with JSON tags.
+- `Push` returns `anway.ErrNotUnique` when a [unique lock](/docs/concepts/unique-jobs) blocks the job.
+
+```go
+err := client.Push(ctx, job)
+
+if errors.Is(err, anway.ErrNotUnique) {
+	log.Printf("job %s is already in a queue", job.JID)
+
+	return nil
+}
+
+return err
+```
+
+### Push options
+
+`anway.Options` holds the keys of the input contract. All Anway clients use the same keys. All fields are optional.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `Queue` | `string` | `default` | The queue of the job. |
+| `Retry` | `*int` | 25 (server) | The retries after a failure. Use `anway.Int(n)`. `0` discards the job at the first failure. `-1` sends it to the Dead set at once. See [retries](/docs/concepts/retries). |
+| `ReserveFor` | `time.Duration` | 1800 seconds (server) | The time that a worker can hold the job before the server gives it again. The client sends whole seconds, rounded up. The server minimum is 60 seconds. |
+| `Backtrace` | `int` | `0` | The number of backtrace lines that the server keeps for a failure. |
+| `At` | `time.Time` | Now | The time to run the job. See [scheduled jobs](/docs/concepts/scheduled-jobs). |
+| `UniqueFor` | `time.Duration` | None | The time that a unique lock blocks a job with the same event, args, and queue. Sent in seconds. See [unique jobs](/docs/concepts/unique-jobs). |
+| `UniqueUntil` | `string` | `success` (server) | When the unique lock ends: `success` or `start`. |
+| `ExpiresIn` | `time.Duration` | None | The server discards the job at fetch when this time after the push is past. Sent in seconds. |
+| `ExpiresAt` | `time.Time` | None | The server discards the job at fetch when this time is past. Sent in RFC 3339. |
+| `Track` | `bool` | `false` | `true` turns on tracking, so you can read and set the progress of the job with `TrackGet` and `TrackSet`. |
+| `OnDead` | `*anway.DeadHook` | None | `&anway.DeadHook{Event, Queue}`. When the job goes to the Dead set, the server pushes a job with this event to this queue. A blank `Queue` uses the server default. |
+| `Custom` | `map[string]any` | None | The keys of your app. They go in the `custom` hash of the job. |
+
+`UniqueFor`, `UniqueUntil`, `ExpiresIn`, `ExpiresAt`, `Track`, and `OnDead` also go in the `custom` hash. They win over a `Custom` key with the same name. `Topics` is also an option, but only for a worker. A push ignores it. See [topics](/docs/go/topics).
+
+```go
+job, err := anway.NewJob("report.build", []any{42}, anway.Options{
+	Queue:     "reports",
+	At:        time.Now().Add(time.Hour),
+	UniqueFor: 10 * time.Minute,
+	Track:     true,
+	OnDead:    &anway.DeadHook{Event: "report.failed"},
+	Custom:    map[string]any{"tenant": "acme"},
+})
+```
+
+You can give more than one `Options` value. They merge in order:
+
+- A single value, such as `Queue` or `Retry`: the last value that is set wins.
+- `Custom` maps merge, and a later key wins.
+
+```go
+mail := anway.Options{Queue: "mail", Retry: anway.Int(3)}
+
+job, err := anway.NewJob("email.send", []any{"a@b.com"}, mail, anway.Options{Retry: anway.Int(10)})
+```
+
+This job goes to the `mail` queue with 10 retries.
+
+A job also has two helpers. `job.RunAt(t)` sets the run time. `job.SetCustom(key, value)` adds one custom key. Both return the job.
+
+## Push in bulk
+
+`client.PushBulk(ctx, jobs)` sends up to 1,000 jobs (`anway.MaxBulk`) with one `PUSHB` command. The server saves them in one write.
+
+```go
+jobs := make([]*anway.Job, 0, len(users))
+
+for _, user := range users {
+	job, err := anway.NewJob("email.send", []any{user.Email})
+	if err != nil {
+		return err
+	}
+
+	jobs = append(jobs, job)
+}
+
+failures, err := client.PushBulk(ctx, jobs)
+if err != nil {
+	return err
+}
+
+for jid, reason := range failures {
+	log.Printf("job %s is not in: %s", jid, reason)
+}
+```
+
+- `failures` holds the reason for each job that is not in, by jid, such as a duplicate jid or a unique lock. It is empty when all jobs are in.
+- A refused job does not stop the other jobs.
+- More than 1,000 jobs is an error, and no job goes to the server. Send a longer list in parts of 1,000 or less.
+
+See [bulk push](/docs/concepts/bulk-push).
+
+## Errors
+
+| Error | Meaning |
+|---|---|
+| `anway.ErrNotUnique` | A unique lock blocked the push. |
+| `anway.ErrClosed` | The client is closed. |
+| `*anway.ServerError` | The server replied with an error. It has a `Code` and a `Message`. |
+| Connection errors | The client could not reach the server. The next call opens a new connection. |
+
+A failed call does not send again. Your app decides whether to repeat it.
+
+## Other operations
+
+The client also has these operations:
+
+| Group | Operations |
+|---|---|
+| Jobs | `NewJob`, `Push`, `PushBulk`, `Fetch`, `Ack`, `Fail`, `Beat`, `Heartbeat` |
+| Queues | `PauseQueues`, `ResumeQueues`, `RemoveQueues`, `QueueSizes`, `Info` |
+| Admin | `Mutate` |
+| Batches | `BatchNew`, `BatchOpen`, `BatchCommit`, `BatchStatus` |
+| Tracking | `TrackGet`, `TrackSet` |
+| Topics | `Publish`, `Subscribe`, `Unsubscribe` |
+
+See [batches](/docs/concepts/batches) and [queues](/docs/concepts/queues).
+
+## A complete program
+
+This program pushes one job, and then runs a worker for it until you stop it with Ctrl+C. Start a server first, as in the [quickstart](/docs/getting-started).
+
+```go title="main.go"
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	anway "github.com/thadeu/anway-go"
+)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	defer stop()
+
+	if err := push(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := work(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func push(ctx context.Context) error {
+	client, err := anway.Open("", anway.ClientOptions{})
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	job, err := anway.NewJob("email.send", []any{"a@b.com", "Welcome"}, anway.Options{Queue: "mail"})
+	if err != nil {
+		return err
+	}
+
+	return client.Push(ctx, job)
+}
+
+func work(ctx context.Context) error {
+	worker := anway.NewWorker("", anway.WorkerOptions{Queues: []string{"mail"}})
+
+	worker.On("email.send", func(ctx context.Context, job *anway.Job) error {
+		var address, subject string
+
+		if err := job.Bind(&address, &subject); err != nil {
+			return err
+		}
+
+		log.Printf("send %q to %s", subject, address)
+
+		return nil
+	})
+
+	return worker.Run(ctx)
+}
+```
+
+```bash
+go mod init example
+go get github.com/thadeu/anway-go
+ANWAY_URL=tcp://localhost:7419 go run .
+```
+
+## Next steps
+
+<Cards>
+  <Card title="Workers" href="/docs/go/workers" description="Handlers, retries, concurrency, autoscale, and shutdown." />
+  <Card title="Topics" href="/docs/go/topics" description="Send one event to many queues." />
+</Cards>

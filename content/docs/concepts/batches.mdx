@@ -1,0 +1,223 @@
+---
+title: Batches and tracking
+description: Group jobs and run a callback job when they finish, and record the progress of one job.
+---
+
+A batch groups jobs. When the jobs finish, the server pushes a callback job. Use a batch for work in many parts, such as an import of many files, followed by one final step, such as an email to the user.
+
+Job tracking records the state and the progress of one job, so an app can show it to a user.
+
+## Make a batch
+
+1. Create the batch with a `success` callback, a `complete` callback, or both. The server returns the batch id (`bid`).
+2. Push each job with `custom.bid` set to that id.
+3. Commit the batch. This closes the definition.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+client = Anway.client
+
+bid = client.batch_new(
+  success: Anway::Job.new('import.done', [import.id]),
+  complete: Anway::Job.new('import.finished', [import.id]),
+  description: "import #{import.id}"
+)
+
+import.files.each do |file|
+  client.push(Anway::Job.new('import.file', [file.id], custom: { 'bid' => bid }))
+end
+
+client.batch_commit(bid)
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+success, err := anway.NewJob("import.done", []any{importID})
+if err != nil {
+	return err
+}
+
+bid, err := client.BatchNew(ctx, anway.Batch{Success: success, Description: "import"})
+if err != nil {
+	return err
+}
+
+for _, fileID := range fileIDs {
+	job, err := anway.NewJob("import.file", []any{fileID})
+	if err != nil {
+		return err
+	}
+
+	if err := client.Push(ctx, job.SetCustom("bid", bid)); err != nil {
+		return err
+	}
+}
+
+return client.BatchCommit(ctx, bid)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const bid = await client.batchNew({
+  success: new Anway.Job('import.done', [importId]),
+  description: 'import',
+});
+
+for (const fileId of fileIds) {
+  await client.push(new Anway.Job('import.file', [fileId], { custom: { bid } }));
+}
+
+await client.batchCommit(bid);
+```
+
+</Tab>
+</Tabs>
+
+After the commit, a push to the batch fails. `batch_open` (Ruby), `BatchOpen` (Go), and `batchOpen` (Node.js) open a committed batch again, for new jobs and child batches, until the next commit. Open fails after the `success` callback fired.
+
+A batch can have a parent: give `parent_bid` (Ruby), `ParentBID` (Go), or `parentBid` (Node.js) when you create it. The parent then waits for the child batch.
+
+## Callbacks
+
+| Callback | Fires when |
+|---|---|
+| `complete` | All jobs ran one time, with `ACK` or `FAIL`, and all child batches are complete. |
+| `success` | All jobs have `ACK`, and the `success` callback of all child batches has `ACK`. |
+
+- `success` always comes after `complete`.
+- An empty batch fires its callbacks at the commit.
+- A callback is a normal job. It runs and retries as other jobs do. The server adds `custom._bid` and `custom._cb` to it.
+- A callback counts as finished only at its `ACK`. A missing callback counts as finished at once.
+
+## Batch status
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+status = Anway.client.batch_status(bid)
+
+status['pending']
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+status, err := client.BatchStatus(ctx, bid)
+if err != nil {
+	return err
+}
+
+log.Println(status.Total, status.Pending, status.Failed)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const status = await client.batchStatus(bid);
+
+console.warn(status.total, status.pending, status.failed);
+```
+
+</Tab>
+</Tabs>
+
+| Field | Meaning |
+|---|---|
+| `bid` | The batch id. |
+| `parent_bid` | The parent batch, if any. |
+| `description` | The description that you gave. |
+| `created_at` | When the batch was made. |
+| `total` | The jobs in the batch. |
+| `pending` | The jobs without an `ACK`. |
+| `failed` | The pending jobs that failed at least one time. |
+| `complete_st` | The `complete` callback: blank before it fires, `1` after it fires, `2` after it finishes. |
+| `success_st` | The `success` callback, with the same values. |
+
+## Limits
+
+- A job that goes to the Dead set, or that a `mutate`, a kill, or an expiry removes, stays pending. The `success` callback then does not fire.
+- A batch with no commit expires after 30 minutes. A batch that you opened again has no expiry.
+- A batch expires 24 hours after its `success` callback finishes. A batch that did not finish does not expire.
+
+## Job tracking
+
+Push a job with `track: true`. The server then records its state, and the worker can add a percent and a description.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+class ExportJob
+  include Anway::Worker
+
+  anway_options event: 'report.export', track: true
+
+  def perform(report_id)
+    track(percent: 40, desc: 'rows written')
+
+    # ...
+  end
+end
+
+jid = ExportJob.perform_async(7)
+
+Anway.client.track_get(jid)
+# => {"jid" => "...", "state" => "working", "percent" => 40, "desc" => "rows written", ...}
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("report.export", []any{7}, anway.Options{Track: true})
+if err != nil {
+	return err
+}
+
+if err := client.Push(ctx, job); err != nil {
+	return err
+}
+
+err = client.TrackSet(ctx, anway.TrackUpdate{JID: job.JID, Percent: anway.Int(40), Desc: "rows written"})
+if err != nil {
+	return err
+}
+
+track, err := client.TrackGet(ctx, job.JID)
+if err != nil {
+	return err
+}
+
+log.Println(track.State, *track.Percent, track.Desc)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const job = new Anway.Job('report.export', [7], { track: true });
+
+await client.push(job);
+
+await client.trackSet({ jid: job.jid, percent: 40, desc: 'rows written' });
+
+const track = await client.trackGet(job.jid);
+
+console.warn(track.state, track.percent, track.desc);
+```
+
+</Tab>
+</Tabs>
+
+- **States:** `unknown`, `enqueued`, `working`, `success`, `failed`, and `dead`.
+- **Set:** a track set changes `percent` and `desc`. `reserve_until` extends the reservation of the running job. It cannot make the reservation end sooner.
+- **Expiry:** a track expires 30 minutes after its last state change, or 30 minutes after the reservation ends. A get then returns `unknown`.

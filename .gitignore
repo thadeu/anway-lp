@@ -1,0 +1,24 @@
+# dependencies
+/node_modules
+
+# next.js and fumadocs
+/.next/
+/out/
+/.source/
+next-env.d.ts
+*.tsbuildinfo
+
+# cloudflare
+.wrangler
+
+# misc
+.DS_Store
+.env*
+*.pem
+npm-debug.log*
+.pnpm-debug.log*
+
+# written by scripts/llm.mjs before each build
+/public/llm.txt
+/public/llms.txt
+/public/llms-full.txt

@@ -1,0 +1,121 @@
+---
+title: Run the server
+description: Start the Anway server, choose its address and data directory, and protect it with a password.
+---
+
+The Anway server is one binary with embedded disk storage. Producers and workers in any language connect to it over TCP. This page shows how to run it on a host. For containers, see [Docker](/docs/server/docker).
+
+## Start the server
+
+```bash
+anway
+```
+
+With no settings, the server listens on `127.0.0.1:7419` and keeps its data in `./data`. The log shows `server started` with the address (`addr`) and the data directory (`data_dir`).
+
+To accept clients from other hosts, bind to a public address and set a password:
+
+```bash
+SERVER_PASSWORD=change-me anway --bind 0.0.0.0:7419 --data-dir /var/lib/anway
+```
+
+Clients then connect with `tcp://:change-me@jobs.example.com:7419`.
+
+## Flags
+
+Flags have priority over env vars. Each flag has an env var with the same effect.
+
+| Flag | Env var | Default | Meaning |
+|---|---|---|---|
+| `--bind` | `BIND_ADDR` | `127.0.0.1:7419` | Address of the work protocol |
+| `--data-dir` | `DATA_DIR` | `./data` | Storage directory |
+| `--conf-dir` | `CONF_DIR` | `./conf.d` | Directory of the YAML settings |
+| `--tls-cert` | `TLS_CERT_FILE` | Empty | TLS certificate file |
+| `--tls-key` | `TLS_KEY_FILE` | Empty | TLS private key file |
+| `--web` | `WEB_ADDR` | Empty (off) | Address of the HTTP API |
+| `--version` | None | | Print the version and stop |
+| `--help` | None | | Print the flags and stop |
+
+[Configuration](/docs/server/configuration) lists all env vars and the YAML settings.
+
+## Ports
+
+| Port | Setting | Use |
+|---|---|---|
+| 7419 | `BIND_ADDR` | The work protocol. Producers and workers connect here. |
+| 7420 | `WEB_ADDR` | The [HTTP API](/docs/server/http-api) for the web console. It is off until you set `WEB_ADDR`. 7420 is the port that the docs and the image use. |
+
+## Password
+
+`SERVER_PASSWORD` sets the client password. The server does not start on an address that is not a loopback address when the password is empty.
+
+The password has no flag, because a process list shows flags. Set it in the environment.
+
+Clients send the password in the URL:
+
+```text
+tcp://:change-me@jobs.example.com:7419
+```
+
+A password does not encrypt job data. When clients connect over a shared network, also use [TLS](/docs/server/tls).
+
+## Data directory
+
+The data directory holds all jobs, queues, topic subscriptions, saved worker settings, and saved metrics in one file, `jobs.db`. The server makes the directory if it does not exist.
+
+- Keep the directory on a local disk.
+- Run one server for each data directory. A second server on the same directory does not start, because the first server locks the file.
+- Backups go to `backups` in the data directory, unless you set `BACKUP_DIR`. See [Operations](/docs/server/operations#backups).
+
+## Signals
+
+| Signal | Effect |
+|---|---|
+| `TERM`, `INT` | Stop. Running jobs get time to report. See [Shutdown](#shutdown). |
+| `HUP` | Load the YAML settings again. If a file is invalid, the old settings stay active. |
+| `USR1` | Write a backup snapshot. |
+
+## Shutdown
+
+At `TERM` or `INT`, the server does these steps:
+
+1. It closes its port, so no new client connects.
+2. It stops giving out jobs. The jobs in the queues stay there.
+3. Running jobs can still report their result on their open connections.
+4. It stops when no job runs, when no client is connected, or when `SHUTDOWN_TIMEOUT` ends. The default is 30 seconds.
+
+A job that did not report stays reserved on disk. After the next start, its reservation ends, and the server handles it as a failed job, so the job goes to retry. The server does not tell the workers to stop. The workers reconnect and fetch again when the server comes back.
+
+Give the process manager a stop timeout longer than `SHUTDOWN_TIMEOUT`.
+
+## Health checks
+
+- The work port: use a TCP probe on port 7419.
+- The HTTP API, when it is on: `GET /healthz` returns `{"status":"ok"}`. It needs no token.
+
+```bash
+curl http://127.0.0.1:7420/healthz
+```
+
+## Logs
+
+The server writes text logs to stderr. Set `LOG_LEVEL` to `debug`, `info`, `warn`, or `error`. The default is `info`.
+
+## Flush
+
+The `FLUSH` command deletes all data. It is off by default. Set `ALLOW_FLUSH=true` to turn it on, for example on a test server. Do not turn it on in production.
+
+## Faktory clients
+
+The server follows the public Faktory work protocol, so existing Faktory clients can connect. See [Faktory](/docs/reference/faktory).
+
+## More
+
+<Cards>
+  <Card title="Configuration" href="/docs/server/configuration" description="Every env var, and the YAML settings for cron and throttles." />
+  <Card title="Docker" href="/docs/server/docker" description="The image, volumes, and a Compose example." />
+  <Card title="TLS" href="/docs/server/tls" description="Encrypt client traffic with Let's Encrypt." />
+  <Card title="Web console" href="/docs/server/console" description="See queues, jobs, and workers in a browser." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="Read and change the server state over HTTP." />
+  <Card title="Operations" href="/docs/server/operations" description="Durability, backups, upgrades, and disk size." />
+</Cards>

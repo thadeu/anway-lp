@@ -1,0 +1,170 @@
+---
+title: Configuration
+description: Every key of config/anway.yml, the Ruby configuration block, and the environment variables of the gem.
+---
+
+The gem reads its settings from `config/anway.yml`, from the flags of the `anway` command, and from environment variables. In Ruby code, `Anway.configure` sets the client.
+
+```yaml title="config/anway.yml"
+queues:
+  - [critical, 4]
+  - [mailers, 2]
+  - [default, 1]
+concurrency: <%= ENV.fetch('WORKER_THREADS', 10) %>
+timeout: 25
+
+development:
+  server:
+    web: 127.0.0.1:7420
+    web_token: dev
+
+production:
+  url: <%= ENV["ANWAY_URL"] %>
+  concurrency: 20
+```
+
+## How the file works
+
+- The gem runs the file through ERB, then reads it as YAML.
+- The keys at the top apply to every environment.
+- The section of the current environment, such as `production:`, overrides them.
+- The environment comes from `-e`, then `RAILS_ENV`, then `APP_ENV`. The default is `development`.
+- A missing file is not an error, unless you name it with `-C`.
+- Flags have priority over the environment section.
+
+## Worker keys
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `queues` | List | The queues of the job classes, of their subscriptions, and of the Active Job classes, and `default` | Queues in order. An item is a name, or `[name, weight]`. A list without weights uses strict order. |
+| `concurrency` | Integer | `10` | The number of job threads. With autoscale, the start count and the default `min`. |
+| `timeout` | Number | `25` | Seconds for jobs to finish at a stop. |
+| `labels` | List | `[]` | Worker labels. The gem always adds `ruby`. |
+| `hostname` | String | The machine name | The worker hostname in the console. |
+| `tag` | String | The app folder | The name of the app in the console. |
+| `autoscale` | Hash | Off | `max`, and `min` if you want. Both are positive integers, and `min` is at most `max`. |
+| `require` | String | `config/environment.rb` | The file that loads the jobs. |
+| `url` | String | None | The url of a server that runs apart. With a url, the app does not run the server. |
+
+```yaml title="config/anway.yml"
+concurrency: 10
+autoscale:
+  max: 40
+  min: 5
+hostname: worker.1
+tag: shop
+```
+
+Refer to [Workers](/docs/ruby/workers#threads-and-autoscale) for the autoscale rules.
+
+## Server keys
+
+Without a `url`, the app runs the Anway server itself: the server is embedded. The `server` keys set the embedded server.
+
+```yaml title="config/anway.yml"
+production:
+  server:
+    bind: 0.0.0.0:7419
+    password: <%= ENV["ANWAY_PASSWORD"] %>
+```
+
+| `server` key | Default | Meaning |
+|---|---|---|
+| `mode` | `embedded`, or `external` with a url | `embedded` or `external`. Set it only to override the url rule. `external` needs a url. |
+| `bind` | `127.0.0.1:7419` | The address of the embedded server. Use `0.0.0.0:7419` and a `password` for workers on other hosts. |
+| `data` | `storage/anway` | The data folder of the embedded server. |
+| `password` | None | The server password. |
+| `web` | Off | The address of the HTTP API, for the web console. |
+| `web_token` | A random token | The token of the HTTP API. Without it, the token changes at each start. Set it to call the API from scripts. |
+
+When the console runs next to an embedded server, `web` is on by default, on `127.0.0.1:7420`. Refer to [Run the server](/docs/server) and [HTTP API](/docs/server/http-api).
+
+## Console
+
+```yaml title="config/anway.yml"
+console:
+  path: /path/to/anway-webui
+```
+
+| `console` key | Default | Meaning |
+|---|---|---|
+| `path` | None | The console binary. Without it, no console starts. |
+| `bind` | `127.0.0.1:7421` | The console address, and where `Anway::Web` finds it. |
+| `api` | The API of the embedded server | The server API that the console reads, for a server that runs apart. |
+| `token` | The server `web_token` | The token for that API. |
+
+With `console.path`, `bin/anway` and the Puma plugin start the console next to the server. With an embedded server, they also open the server API on `127.0.0.1:7420`, with a random token that only these two processes know. `bin/anway console` runs only the console.
+
+A console for a server that runs apart needs `server.web` or `console.api`. Refer to [Console](/docs/server/console).
+
+## Ruby configuration
+
+Set the client in an initializer:
+
+```ruby title="config/initializers/anway.rb"
+Anway.configure do |config|
+  config.pool_size = 8
+  config.timeout = 10
+  config.tls = { ca_file: 'ca.pem' }
+
+  config.use MyMiddleware.new
+  config.on_error { |error, job| report(error, job) }
+end
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `url` | From `config/anway.yml` or `ANWAY_URL` | The server url. It overrides the file and the env var. |
+| `pool_size` | `8` | The connections of the shared client. |
+| `timeout` | `10` | Seconds for a server call. |
+| `tls` | None | Options of the TLS context, for a `tcp+tls://` url. |
+| `logger` | `Logger` to `$stdout`, or `Rails.logger` in Rails | The logger of the gem. |
+| `use(middleware)` | None | Adds a middleware around each job. |
+| `on_error` | In Rails, `Rails.error.report` | Adds a handler that runs when a job fails. The block gets the error and the job. |
+
+A middleware has `call(job)` and yields to run the next one. The first middleware that you add is the outermost:
+
+```ruby
+class TimingMiddleware
+  def call(job)
+    started = Time.now
+
+    yield
+
+    Rails.logger.info("#{job.type} took #{Time.now - started}s")
+  end
+end
+```
+
+### The server url
+
+The url has the form `tcp://:password@localhost:7419`. Use `tcp+tls://` for TLS. Refer to [TLS](/docs/server/tls).
+
+The gem takes the url in this order:
+
+1. `Anway.config.url` in an initializer.
+2. `url` in `config/anway.yml`.
+3. `ANWAY_URL`.
+4. With no url, the embedded server on its local address.
+
+## Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `ANWAY_URL` | The url of a server that runs apart. |
+| `ANWAY_SERVER` | `embedded` or `external`. It has priority over `server.mode`. |
+| `ANWAY_SERVER_PATH` | Another server binary for the embedded server. The gem for the `ruby` platform has no server, so it needs this variable or a url. |
+| `ANWAY_HOSTNAME` | The worker hostname. It has priority over `hostname` in the file. |
+| `ANWAY_TAG` | The worker tag. It has priority over `tag` in the file. |
+| `ANWAY_CONSOLE_PATH` | The console binary. It has priority over `console.path`. |
+| `ANWAY_IN_PUMA` | `true` or `false`: turns `plugin :anway` on or off. Without it, the plugin runs only in development. |
+| `ANWAY_WORKER` | The worker process sets it to `1` before it loads the app. Read it in your app, for example to set the database pool. |
+| `RAILS_ENV`, `APP_ENV` | The environment section of `config/anway.yml`. |
+
+## Flags
+
+The flags of the `anway` command have priority over the file. Refer to [Workers](/docs/ruby/workers#run-the-worker-process) for the full list.
+
+```bash
+bundle exec anway -C config/anway.yml -q critical,mailers,default -c 10
+```

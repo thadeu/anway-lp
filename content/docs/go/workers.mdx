@@ -1,0 +1,236 @@
+---
+title: Go workers
+description: Run jobs in Go with anway.NewWorker, worker.On, and worker.Run.
+---
+
+A worker fetches jobs from the server and runs the handler for each job. You declare one handler for each event, and the worker runs many jobs at once, each in its own goroutine.
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{Queues: []string{"critical", "default"}})
+
+worker.On("email.send", func(ctx context.Context, job *anway.Job) error {
+	var address, subject string
+
+	if err := job.Bind(&address, &subject); err != nil {
+		return err
+	}
+
+	return send(ctx, address, subject)
+})
+
+return worker.Run(ctx)
+```
+
+`anway.NewWorker(url, options)` creates a worker. A blank URL uses `ANWAY_URL`, as for a [client](/docs/go#connect). `worker.Run(ctx)` connects, fetches, and runs jobs until a stop.
+
+## Declare handlers
+
+`worker.On(event, handler, options...)` declares the handler of an event. The worker runs each job whose event is this event.
+
+```go
+worker.On("report.build", buildReport, anway.Options{Queue: "reports"})
+```
+
+- A worker has one handler for each event. A second `On` for the same event panics, as a duplicate pattern does in `net/http`.
+- `On` uses only `Queue`, `Retry`, `ReserveFor`, and `Topics`. The other fields of `anway.Options` are for a push, and have no effect in `On`.
+- When a declaration sets `Queue` or has `Topics`, the worker also fetches from that queue.
+- `Retry` and `ReserveFor` go to the topic subscriptions of the declaration. See [topics](/docs/go/topics).
+- You can give more than one `Options` value. They merge in order, as for a [push](/docs/go#push-options). `Topics` add up, in order, with no duplicates.
+
+The worker fetches from `Queues` and from the queues that `On` adds, in this order. Without any queue, it fetches from `default`.
+
+## The handler
+
+A handler has this signature:
+
+```go
+type Handler func(ctx context.Context, job *anway.Job) error
+```
+
+`job.Bind(targets...)` decodes the args, in order, into the pointers that you give. A target can be any type that `encoding/json` decodes, such as a struct with JSON tags.
+
+```go
+type product struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Price float64 `json:"price"`
+}
+
+worker.On("product.create", func(ctx context.Context, job *anway.Job) error {
+	var item product
+
+	if err := job.Bind(&item); err != nil {
+		return err
+	}
+
+	return save(ctx, item)
+})
+```
+
+The job has these fields:
+
+| Field | Meaning |
+|---|---|
+| `JID` | The job id. |
+| `Type` | The event of the job. |
+| `Args` | The raw JSON args. Use `Bind` to read them. |
+| `Queue` | The queue of the job. |
+| `Retry`, `ReserveFor`, `Backtrace` | The options of the job. |
+| `At`, `CreatedAt`, `EnqueuedAt` | The times of the job, in RFC 3339. |
+| `Custom` | The custom hash of the job. |
+| `Failure` | The last failure: `RetryCount`, `FailedAt`, `NextAt`, `Message`, `ErrType`, and `Backtrace`. It is nil at the first run. |
+
+`ctx` is the job context. The worker cancels it at a shutdown, when the shutdown timeout ends. Pass `ctx` to every call that can wait, such as HTTP calls and database queries.
+
+### Middleware
+
+`worker.Use(middleware...)` wraps all handlers. The first middleware that you add is the outermost.
+
+```go
+worker.Use(func(next anway.Handler) anway.Handler {
+	return func(ctx context.Context, job *anway.Job) error {
+		started := time.Now()
+
+		err := next(ctx, job)
+
+		log.Printf("%s %s took %s", job.Type, job.JID, time.Since(started))
+
+		return err
+	}
+})
+```
+
+## Errors and retries
+
+A handler that returns `nil` acknowledges the job, and the server removes it. A handler that returns an error or panics fails the job.
+
+- The worker sends the Go type of the error as the error type, and the error text as the message.
+- A panic also sends the first 30 lines of the stack.
+- A job with no handler for its event fails with `no handler for job type`.
+
+The server retries a failed job. It waits longer after each failure, until no retries remain. Then the job goes to the Dead set. The `Retry` option of the job sets the number of retries. See [retries](/docs/concepts/retries).
+
+Delivery is at least once. A worker can get the same job again, for example after a crash. Make each handler idempotent.
+
+When the worker cannot report a result, it logs a warning. The server then gives the job again when its reservation (`ReserveFor`) expires.
+
+## Concurrency
+
+A worker runs `Concurrency` jobs at once (default 10). Each job slot is a goroutine that fetches a job, runs it, and then fetches the next job. The web UI calls these slots threads.
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{
+	Queues:         []string{"default"},
+	Concurrency:    10,
+	MaxConcurrency: 25,
+})
+```
+
+- The connection pool of the worker has one connection for each slot, plus one.
+- `MaxConcurrency` is the most jobs that the worker can run at once, such as the size of its database pool. The worker never runs more, and the server never asks for more. A `Concurrency` above `MaxConcurrency` is lowered to it.
+- Without `MaxConcurrency`, the worker runs at most 1,000 slots, or `Concurrency` when it is higher.
+
+Each goroutine can hold a database connection. Set `MaxConcurrency` to the pool size, or set `Autoscale.Max` at or below it. If not, jobs can fail with a pool timeout.
+
+## Autoscale
+
+The server can change the number of slots while the worker runs: from the web UI, from the HTTP API, or with autoscale. `Autoscale` starts the worker with autoscale on.
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{
+	Queues:         []string{"critical", "default"},
+	Concurrency:    10,
+	MaxConcurrency: 40,
+	Autoscale:      &anway.Autoscale{Max: 40},
+	Hostname:       "worker.1",
+	Tag:            "shop",
+})
+```
+
+- `&anway.Autoscale{Min, Max}` sets the range. A zero `Min` is `Concurrency`. The server lowers a `Max` above `MaxConcurrency` to it.
+- `Run` returns an error when `Max` is below 1, or `Min` is above `Max`.
+- When the server asks for more slots, the worker starts goroutines at once. When it asks for fewer, a goroutine stops after its job. The worker never stops a running job to scale down.
+- When the server asks for more slots while a stop is pending, the worker cancels the stop first.
+- The connection pool grows with the slots. It does not shrink.
+- After a change, the worker sends a heartbeat with the new count at once.
+- After `quiet`, the worker does not change its slots.
+
+The server saves a change from the web UI or the API for the worker name: hostname and tag. A new process with that name starts with the saved setting, not with its config. See [autoscale](/docs/concepts/autoscale).
+
+## Worker identity
+
+The web UI shows each worker by its hostname and tag.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Hostname` | The machine name | The name of the worker. |
+| `Tag` | None | A short name for the app or the role of the process, such as `shop`. |
+| `Labels` | None | More labels. The worker always sends the label `go` first. |
+
+The worker also sends its process id, and a new random worker id at each `Run`.
+
+A container often gets a random hostname at each deploy. Set a stable `Hostname`, such as `worker.1`, so that a saved thread setting stays across deploys.
+
+## Heartbeat
+
+The worker sends a heartbeat (`BEAT`) every `BeatInterval` (default 15 seconds). The first heartbeat goes out when `Run` starts.
+
+- The heartbeat tells the server that the worker is alive, its state, and the number of slots that run now.
+- The reply can ask for a new number of slots, a state change (`quiet` or `terminate`), or both.
+- When a heartbeat fails, the worker logs a warning and continues. It tries again at the next interval.
+
+`Run` returns an error when the first heartbeat fails, for example when the server is not available.
+
+## Graceful shutdown
+
+The worker stops in two cases:
+
+- The context that you give to `Run` ends.
+- A heartbeat reply has `terminate`.
+
+At a stop, the worker does these steps:
+
+1. It stops fetching. Running jobs get `ShutdownTimeout` (25 seconds) to finish.
+2. It cancels the job contexts. Jobs get `CancelGrace` (5 seconds) to return.
+3. It fails the jobs that still run, and `Run` returns. A late result from these handlers is ignored.
+
+The context of `Run` is not the job context. When it ends, running jobs continue until the shutdown timeout ends.
+
+Handlers must respect `ctx`. A goroutine that ignores it continues to run after `Run` returns. Set the stop timeout of your container above `ShutdownTimeout` plus `CancelGrace`.
+
+Use `signal.NotifyContext` to stop the worker at SIGINT and SIGTERM:
+
+```go
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+defer stop()
+
+if err := worker.Run(ctx); err != nil {
+	log.Fatal(err)
+}
+```
+
+A heartbeat reply with `quiet` stops fetching. The worker stays alive, continues to send heartbeats, and finishes its running jobs. It stops at `terminate` or when its context ends.
+
+<Callout type="info" title="Server restarts">
+The server does not send `quiet` or `terminate` when it shuts down. A worker reconnects and fetches again when the server comes back.
+</Callout>
+
+## Worker options
+
+All fields of `anway.WorkerOptions` are optional.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `Queues` | `[]string` | `default` | The queues to fetch, in order. `On` can add more. |
+| `Concurrency` | `int` | `10` | The jobs that the worker runs at once when it starts. |
+| `MaxConcurrency` | `int` | `0` | The most jobs that the worker can run at once. With `0`, see [concurrency](#concurrency) for the limit. |
+| `Autoscale` | `*anway.Autoscale` | nil (off) | Starts the worker with autoscale on. |
+| `Hostname` | `string` | The machine name | The name of the worker in the web UI. |
+| `Tag` | `string` | None | A short name for the app or the role of the process. |
+| `ShutdownTimeout` | `time.Duration` | 25 seconds | The time for running jobs to finish at a stop. |
+| `CancelGrace` | `time.Duration` | 5 seconds | The time for canceled jobs to return. |
+| `Labels` | `[]string` | None | More labels. The worker also sends `go`. |
+| `BeatInterval` | `time.Duration` | 15 seconds | The time between heartbeats. |
+| `Logger` | `*slog.Logger` | `slog.Default()` | The logger for warnings, such as a failed fetch. |
+| `Client` | `anway.ClientOptions` | None | The connection options, such as `Timeout` and `TLS`. The worker sets the pool size, the worker id, and the labels. |

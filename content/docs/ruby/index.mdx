@@ -1,0 +1,173 @@
+---
+title: Ruby and Rails
+description: Push jobs and run workers from Ruby and Rails with the anway gem.
+---
+
+The `anway` gem is the Ruby and Rails client and worker for Anway. With it, you can push jobs from your app, run them in a worker process, and publish events to topics. The gem needs Ruby 3.4 or later. The Rails integration needs Rails 8.1.
+
+In Rails, you do not need Redis or migrations. The gem for each platform carries the Anway server, and the app can run the server itself.
+
+## Install in Rails
+
+<Steps>
+
+<Step>
+
+### Add the gem
+
+```bash
+bundle add anway
+```
+
+</Step>
+
+<Step>
+
+### Run the installer
+
+```bash
+bin/rails generate anway:install
+```
+
+The installer does these steps:
+
+- It writes `config/anway.yml` and `bin/anway`.
+- It adds `plugin :anway` to `config/puma.rb`.
+- It adds the console mount to `config/routes.rb` as a comment.
+
+Add `--active-job` to make Anway the Active Job adapter. Without it, Active Job stays as it is, and `include Anway::Worker` works in any class. Refer to [Active Job](/docs/ruby/active-job).
+
+</Step>
+
+<Step>
+
+### Write a job
+
+```ruby title="app/jobs/welcome_job.rb"
+class WelcomeJob
+  include Anway::Worker
+
+  anway_options queue: 'mailers', retry: 5
+
+  def perform(user_id)
+    UserMailer.welcome(user_id).deliver_now
+  end
+end
+```
+
+</Step>
+
+<Step>
+
+### Push the job
+
+```ruby
+WelcomeJob.perform_async(42)
+```
+
+Args must be JSON types with string hash keys, because workers in other languages read them.
+
+</Step>
+
+<Step>
+
+### Start the app
+
+```bash
+bin/dev
+```
+
+In development, Puma starts the Anway server and the workers next to the web server. The worker runs `WelcomeJob`.
+
+</Step>
+
+</Steps>
+
+## Embedded server or a server that runs apart
+
+Without a url, the app runs the Anway server itself: the server is **embedded**. Its data goes to `storage/anway`, and it listens on `127.0.0.1:7419`.
+
+To use a server that runs apart, set `ANWAY_URL`, or `url` in `config/anway.yml`. Then the app runs only workers:
+
+```yaml title="config/anway.yml"
+queues: [default]
+concurrency: 10
+
+production:
+  url: <%= ENV["ANWAY_URL"] %>
+```
+
+The url has the form `tcp://:password@localhost:7419`. Use `tcp+tls://` for TLS.
+
+Run one server for each deployment. Two embedded servers have two separate sets of queues. On more than one host, run `bin/anway server` one time, or the `ghcr.io/thadeu/anway` image, and set `ANWAY_URL` on every host. Refer to [Run the server](/docs/server).
+
+<Callout type="info" title="The ruby platform gem">
+The gem for the `ruby` platform has no server binary. With it, set `ANWAY_SERVER_PATH` to an Anway server binary, or set a url.
+</Callout>
+
+## Run workers
+
+The `anway` command starts the worker process. In Rails, `bin/anway` does the same with the app binstub.
+
+```bash
+bundle exec anway                     # the embedded server when there is no url, and workers
+bundle exec anway server              # only the server
+bundle exec anway console             # only the web console
+bundle exec anway worker -q mailers   # only workers
+```
+
+- In Rails, the command loads `config/environment.rb`. Outside Rails, give the file that loads your jobs with `-r`.
+- Without a queue list, the worker fetches the queues of its job classes, the queues of their topic subscriptions, the queues of the Active Job classes, and `default`.
+- A queue with no worker does not cause an error. Its jobs wait.
+
+Refer to [Workers](/docs/ruby/workers#run-the-worker-process) for the flags, signals, and shutdown.
+
+## Plain Ruby
+
+The gem works without Rails. Set the server address with `ANWAY_URL`, or with `Anway.config.url`:
+
+```ruby
+require 'anway'
+
+Anway.configure do |config|
+  config.url = 'tcp://localhost:7419'
+end
+
+class WelcomeJob
+  include Anway::Worker
+
+  def perform(user_id)
+    puts "welcome #{user_id}"
+  end
+end
+
+WelcomeJob.perform_async(1)
+```
+
+Then start a worker that loads the same file:
+
+```bash
+bundle exec anway worker -r ./jobs.rb
+```
+
+Without a url, the client uses `ANWAY_URL`, then `tcp://127.0.0.1:7419`.
+
+## Push a job for another language
+
+To send a job that a worker in any language runs, give the event name and the args. You do not need a local class:
+
+```ruby
+Anway.push('image.resize', [42], queue: 'media', expires_in: 600)
+```
+
+Refer to [Workers](/docs/ruby/workers#options) for all push keys.
+
+## Next steps
+
+<Cards>
+  <Card title="Workers" href="/docs/ruby/workers" description="Job classes, options, scheduled pushes, bulk pushes, threads, and autoscale." />
+  <Card title="Active Job" href="/docs/ruby/active-job" description="Use Anway as the Active Job adapter in Rails." />
+  <Card title="Configuration" href="/docs/ruby/configuration" description="Every key of config/anway.yml, the flags, and the environment variables." />
+  <Card title="Topics" href="/docs/ruby/topics" description="Publish one event to many queues and subscribe from a job class." />
+  <Card title="Testing" href="/docs/ruby/testing" description="Run your app tests with no server." />
+</Cards>

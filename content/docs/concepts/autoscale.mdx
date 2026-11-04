@@ -1,0 +1,170 @@
+---
+title: Autoscale
+description: Let the server change the threads of a running worker, by hand or with autoscale.
+---
+
+A worker runs a number of jobs at once: threads in Ruby, goroutines in Go, and job slots in Node.js. These docs call them threads. The server can change this number while the worker runs: from the web console, from the HTTP API, or with autoscale. With autoscale, the server adds threads while jobs wait, and removes them when the load drops.
+
+## Turn on autoscale
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```yaml title="config/anway.yml"
+concurrency: 10   # the start count, and the autoscale min
+autoscale:
+  max: 40
+```
+
+```bash
+bin/anway --concurrency 10 --autoscale 40
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{
+	Queues:         []string{"critical", "default"},
+	Concurrency:    10,
+	MaxConcurrency: 25,
+	Autoscale:      &anway.Autoscale{Max: 40},
+	Hostname:       "worker.1",
+	Tag:            "shop",
+})
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const worker = new Anway.Worker({
+  concurrency: 5,
+  hostname: 'worker.1',
+  tag: 'shop',
+  autoscale: { min: 5, max: 40 },
+  maxConcurrency: 40,
+});
+```
+
+</Tab>
+</Tabs>
+
+| Setting | Meaning |
+|---|---|
+| `concurrency` | The threads at start. The default is 10 in all clients. |
+| `autoscale.max` | The most threads that autoscale adds. Required to turn autoscale on. |
+| `autoscale.min` | The fewest threads that autoscale keeps. The default is `concurrency`. |
+| Limit | The most threads that the worker can run, such as the size of its database pool: `MaxConcurrency` in Go, `maxConcurrency` in Node.js. The Ruby worker sends its ActiveRecord pool size. The server never asks for more, and lowers an autoscale `max` above it to the limit. |
+
+The server never asks for more than 1,000 threads.
+
+## How the change reaches the worker
+
+```text
+ web console / HTTP API           server                         worker
+ ----------------------           ------                         ------
+ concurrency = 12      ------->   wanted = 12
+                                                <-------------   BEAT {"concurrency": 8}
+                                  wanted != 8   ------------->   {"concurrency": 12}
+                                                                 starts 4 threads
+                                                <-------------   BEAT {"concurrency": 12}
+                                  wanted = done ------------->   OK
+```
+
+1. The server holds the count that each worker must run. The worker only obeys, so all clients share one autoscale rule.
+2. The worker sends its thread count in each `BEAT`, every 15 seconds.
+3. When the wanted count differs, the `BEAT` reply has `{"concurrency": n}`. So a change reaches the worker in up to 15 seconds.
+4. The worker starts new threads at once. A thread that must stop first finishes its job. The worker never stops a running job to scale down.
+5. The worker sends a `BEAT` with the new count at once. The server does not run autoscale on that beat, so one change does not stack on another.
+
+A worker that does not send its count in `BEAT`, such as a Faktory client, never gets a change. The web console shows it as not scalable.
+
+## The autoscale rule
+
+At each beat of the worker, the server reads two values:
+
+- **Backlog:** the jobs that wait in the queues of this worker. Jobs in other queues do not count.
+- **Busy:** the jobs that this worker runs now.
+
+Then it applies the first rule that matches:
+
+| Condition | Change |
+|---|---|
+| The count is above `max` or below `min` | Go to `max` or `min`. |
+| Burst: at least 2 waiting jobs for each thread, and all threads busy | Double the threads and add 15% more, up to `max`. |
+| Backlog above 0, and all threads busy | Add a quarter of the threads, at least 1, up to `max`. |
+| Backlog 0, and at most half of the threads busy, for 60 seconds | Remove a quarter of the threads, at least 1, down to `min`. |
+| Anything else | No change. The 60 seconds start again. |
+
+The server adds threads fast and removes them slowly. A short pause in the jobs does not remove threads, and the next burst does not start from a small count.
+
+### Example
+
+A worker starts with `concurrency: 10` and `autoscale: {max: 40}`. A burst of 5,000 jobs arrives:
+
+| Beat | Threads | Busy | Backlog | Next count |
+|---|---|---|---|---|
+| 1 | 10 | 10 | 5,000 | 22 (burst: 10 + 10 + 15%) |
+| 2 | 22 | 22 | 4,700 | 40 (burst, stops at max) |
+
+The worker reaches its max in about 30 seconds. After the backlog is done, it goes down 40, 30, 22, 16, 12, 10, with one step each minute at low load. This takes about 5 minutes.
+
+With a small backlog, under 2 waiting jobs for each thread, a step adds only a quarter. So a few waiting jobs do not double the threads.
+
+### Things to know
+
+- The backlog includes paused queues. A paused queue alone does not add threads, because its jobs do not keep threads busy. But when the worker is busy with its other queues, the paused backlog counts. Pause a queue for a long time only on workers with autoscale off, or take it out of their queues.
+- Each worker scales by itself. When many workers share a queue, each one can add threads for the same backlog. Set `max` for each worker with this in mind.
+- More threads help only when the jobs wait on I/O, such as HTTP calls or the database. Jobs that use the CPU do not go faster with more threads than cores. In Node.js, synchronous CPU work blocks the event loop.
+- Each thread can hold a database connection. Set the limit to the pool size, or set `max` at or below it. If not, jobs can fail with a pool timeout.
+
+## Change the threads by hand
+
+Open **Workers** in the [web console](/docs/server/console), and click **Scale**. Set a thread count, or turn on autoscale with a min and a max. Or call the [HTTP API](/docs/server/http-api):
+
+```bash
+curl -X PATCH http://127.0.0.1:7420/api/v1/workers/$WID \
+  -H "Authorization: Bearer $WEB_TOKEN" \
+  -d '{"concurrency": 12}'
+```
+
+| Body | Effect |
+|---|---|
+| `{"concurrency": 12}` | Run 12 threads. While autoscale is on, the count must be between `min` and `max`, and autoscale continues from it. |
+| `{"autoscale": {"max": 40}}` | Turn on autoscale. `min` is the count that the worker started with. |
+| `{"autoscale": {"min": 4, "max": 40}}` | Turn on autoscale with a min. |
+| `{"autoscale": false}` | Turn off autoscale. The worker keeps the count that it has. |
+| `{"reset": true}` | Drop the saved setting, and go back to the config of the worker. |
+
+The count is 1 to 1,000, and at most the limit of the worker. The API answers `409` for a worker that cannot scale.
+
+## Saved settings win over the config
+
+A change from the console or the API is an operator decision. So it wins over the config of the worker, also after a restart or a deploy.
+
+1. The server saves the change on disk for the worker **name**: its hostname and its tag, such as `worker.1` and `shop`. The pid and the worker id change at each start, and the name does not.
+2. When a process with that name connects, the server applies the saved setting in place of the `concurrency` and `autoscale` of its config. The worker gets the count at its first beat.
+3. **Reset to config** in the console, or `{"reset": true}` in the API, drops the saved setting. Then the config applies again.
+
+| The operator set | A new process with the same name gets |
+|---|---|
+| Autoscale with a min and a max | That range, in place of the config |
+| A thread count, with autoscale off | That count at its first beat |
+| Autoscale off, with no count | Its config count, with autoscale off |
+
+- A saved count or max above the limit of the new process goes down to that limit.
+- A worker on a saved setting shows "saved in console".
+- A worker with no hostname has no name. Its change lasts until the process stops.
+- A container with a random hostname gets a new name at each deploy. Set a stable hostname to keep the setting: `ANWAY_HOSTNAME=worker.1` in Ruby, `Hostname` in Go, `hostname` in Node.js.
+
+## In the web console
+
+The **Workers** page shows one bar for each worker:
+
+- Green: busy threads.
+- Grey: free threads.
+- Dashed: the room that autoscale can still add, up to `max`.
+- Amber mark: a count that the worker gets at its next beat.
+
+The Overview chart has a Threads line, so you can see when autoscale raised the threads.

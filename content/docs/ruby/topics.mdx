@@ -1,0 +1,183 @@
+---
+title: Topics
+description: Publish one event to many queues, and subscribe to it from a Ruby job class.
+---
+
+A topic sends one event to many queues. Each subscription of the topic gets one copy of the event, as a normal job in its own queue, with its own retries and Dead set. Topics need server v0.3.0 or later.
+
+Subscribe with `topics:` in `anway_options`:
+
+```ruby title="app/jobs/broadcast_message.rb"
+class BroadcastMessage
+  include Anway::Worker
+
+  anway_options topics: %w[chat.message], queue: 'realtime'
+
+  def perform(message)
+    ChatChannel.broadcast_to(message['room'], message)
+  end
+end
+```
+
+Publish from any app:
+
+```ruby
+Anway.publish('chat.message', [{ 'room' => 'general', 'body' => 'hi' }], id: 'msg-42')
+# => #<data Anway::Client::Published event="msg-42", jobs=3, duplicate=false>
+```
+
+Refer to [Topics](/docs/concepts/topics) for the server rules.
+
+## Example: one event, apps in many languages
+
+In the Anway demo, a Go app publishes to the `product.created` topic. A Rails app subscribes to it, and creates the product:
+
+```ruby title="app/jobs/subscribe/create_product_worker.rb"
+class Subscribe::CreateProductWorker < ApplicationSubscribe
+  anway_options event: 'product.create'
+  anway_options queue: 'products', topics: %w[product.created]
+
+  def perform(attributes)
+    Product.find_or_create_by!(external_id: attributes.fetch('id')) do |product|
+      product.name = attributes.fetch('name')
+      product.price = attributes.fetch('price')
+      product.status = 'published'
+    end
+  rescue ActiveRecord::RecordNotUnique
+    nil
+  end
+end
+```
+
+`ApplicationSubscribe` is a plain class with `include Anway::Worker`.
+
+- Each event of `product.created` becomes one `product.create` job in the `products` queue.
+- Other apps can also push `product.create` jobs to the same queue directly.
+- Delivery is at least once. The external id makes a second run do nothing.
+
+## Subscribe
+
+```ruby
+anway_options topics: %w[chat.message]
+anway_options topics: %w[chat.message chat.edited], queue: 'realtime', retry: 3, reserve_for: 60
+```
+
+- Each topic in `topics` makes one subscription.
+- The job type of each copy is the `event` of the class. The default is the class name.
+- The copy has the `queue`, `retry`, and `reserve_for` of the class. Without a queue, the copy goes to `default`.
+- `topics` from more than one `anway_options` call add up, with no duplicates. For a single value, such as `queue`, the last call wins. So all topics of a class use the same queue. To send the events of one topic to another queue, use another class with another event.
+- A subclass does not get the `topics` or the `event` of its parent.
+
+### When the subscription starts
+
+The worker sends `SUBSCRIBE` for the subscriptions of all job classes when it starts, before its first fetch.
+
+- `SUBSCRIBE` is idempotent, so each start sends all subscriptions again.
+- A change of `retry` or `reserve_for` applies at the next start.
+- An event that you publish before a subscription exists does not go to that subscription. Start the subscriber worker one time before the first publish.
+
+### Queues of the worker
+
+Without `queues` in `config/anway.yml` and without `-q`, the worker also fetches the queues of the subscriptions.
+
+With a queue list, the worker fetches only that list. For a subscription queue that is not in the list, the worker logs a warning at start:
+
+```text
+anway does not fetch queue realtime, so the events of topic chat.message wait there. Add the queue to queues.
+```
+
+Add the queue to the list.
+
+## Publish
+
+```ruby
+Anway.publish(topic, args = [], id: nil, unique_for: nil, custom: nil)
+```
+
+- `args` is an array, as in a job. Every copy gets the same args. Args must be JSON types with string hash keys. Other values raise `ArgumentError` before the gem sends the event.
+- `id` is the event id. With an id, a second publish of the same topic and id within `unique_for` seconds makes no job, and the reply has `duplicate: true`.
+- The default of `unique_for` is 86,400 seconds (one day). Set `unique_for: 0` to turn off the check.
+- Without an id, the server makes one, such as `evt-…`. There is no duplicate check.
+- `custom` goes to each copy.
+- The reply is an `Anway::Client::Published`, with `event`, `jobs` (the number of copies), and `duplicate`.
+
+Inside a database transaction, `Anway.publish` waits for the commit and returns `nil`. A rollback cancels it.
+
+```ruby
+Anway.publish('chat.message', [{ 'body' => 'hi' }], id: 'msg-42', unique_for: 3600, custom: { 'source' => 'web' })
+```
+
+### Make the handler idempotent
+
+The server adds `topic` and `event` to the `custom` field of each copy. `event` is the event id. Use it as the key to skip an event that already ran:
+
+```ruby
+class StoreMessage
+  include Anway::Worker
+
+  anway_options topics: %w[chat.message], queue: 'cassandra', retry: 10
+
+  def perform(message)
+    event_id = job.custom['event']
+
+    return if Message.exists?(event_id: event_id)
+
+    Message.create!(event_id: event_id, body: message['body'])
+  end
+end
+```
+
+### An event with no subscription
+
+The server does not lose an event with no subscription. It puts the event in the Dead set as one job, with the topic name as the job type, and the reply has `jobs: 0`. When you requeue this job, the server publishes the event again to the subscriptions of that moment.
+
+## Unsubscribe
+
+The worker does not send `UNSUBSCRIBE`. The server keeps a subscription on disk, so copies go to the queue while the app is down.
+
+When you remove a topic from `topics`, remove the subscription with the client. If you do not, its copies wait in the queue:
+
+```ruby
+Anway.client.unsubscribe('chat.message', queue: 'realtime', event: 'BroadcastMessage')
+```
+
+`unsubscribe` returns `true`. A missing subscription is not an error.
+
+You can also subscribe with the client:
+
+```ruby
+Anway.client.subscribe('chat.message', queue: 'realtime', event: 'BroadcastMessage', retry: 3, reserve_for: 60)
+```
+
+## Delivery
+
+- Each copy is delivered at least once. Make each handler idempotent.
+- Copies in different queues have no order between them. A queue keeps its own order.
+- There are no filters. Each subscriber gets every event of the topic, and skips the events that it does not need.
+
+## Plain Ruby
+
+`Anway::Runner` sends the subscriptions of all registered job classes. To send other subscriptions, give a list of `Anway::Worker::Subscription`:
+
+```ruby
+runner = Anway::Runner.new(
+  queues: %w[realtime],
+  subscriptions: BroadcastMessage.subscriptions
+)
+
+runner.run
+```
+
+`Anway::Worker.subscriptions` returns the subscriptions of all registered classes.
+
+## Problems
+
+| Problem | Cause and fix |
+|---|---|
+| `publish` returns `jobs: 0` | The topic has no subscription. Start the subscriber worker one time, so that it sends `SUBSCRIBE`. The event is in the Dead set. Requeue it after the subscription exists. |
+| Copies wait in a queue and do not run | The worker does not fetch that queue. Look for the `does not fetch queue` warning, and add the queue to `queues`. |
+| Copies still go to a queue after you removed a topic | The server keeps the subscription. Call `unsubscribe`. |
+| `Anway::ServerError` at worker start | The server is older than v0.3.0 and does not know `SUBSCRIBE`. Update the server. |
+| A handler runs the same event two times | Delivery is at least once. Make the handler idempotent with `job.custom['event']`. |
+
+To test topics, refer to [Testing](/docs/ruby/testing#topics).

@@ -1,0 +1,134 @@
+---
+title: TLS
+description: Encrypt the traffic between the clients and the server.
+---
+
+TLS is optional. Use it when clients connect to the server over a shared network. A password alone does not encrypt job data.
+
+If the apps and the server are on the same private network, such as WireGuard, Tailscale, or a VPC, TLS on the server is possibly not necessary.
+
+## Turn on TLS
+
+Give the server a certificate and its private key, as PEM files:
+
+```bash
+BIND_ADDR=0.0.0.0:7419 \
+SERVER_PASSWORD=change-me \
+TLS_CERT_FILE=/etc/anway/tls/fullchain.pem \
+TLS_KEY_FILE=/etc/anway/tls/privkey.pem \
+anway
+```
+
+- Set `TLS_CERT_FILE` and `TLS_KEY_FILE` together. With only one of them, the server does not start.
+- The flags `--tls-cert` and `--tls-key` have the same effect.
+- The server accepts TLS 1.2 and later.
+- With TLS on, the port accepts only TLS connections.
+
+Clients use the `tcp+tls` scheme and the domain name of the certificate, not the IP address:
+
+```text
+tcp+tls://:change-me@jobs.example.com:7419
+```
+
+## Let's Encrypt
+
+The server reads standard PEM files, so a Let's Encrypt certificate works directly.
+
+```bash
+certbot certonly --standalone -d jobs.example.com
+
+BIND_ADDR=0.0.0.0:7419 \
+SERVER_PASSWORD=change-me \
+TLS_CERT_FILE=/etc/letsencrypt/live/jobs.example.com/fullchain.pem \
+TLS_KEY_FILE=/etc/letsencrypt/live/jobs.example.com/privkey.pem \
+anway
+```
+
+Requirements:
+
+- The domain must be public.
+- With `--standalone`, port 80 must be available during issue and renewal.
+- The server user must have read access to `privkey.pem`. This file usually has root-only access.
+
+### Renewal
+
+The server reads the certificate only at start, so a new certificate needs a restart. Use a certbot deploy hook:
+
+```bash
+certbot renew --deploy-hook "systemctl restart anway"
+```
+
+`anway` is an example service name. Use the name of your service. Jobs stay on disk during the restart, and clients reconnect.
+
+## Client settings
+
+A client checks the server certificate against the trusted authorities of its runtime, and uses the host name of the URL. A Let's Encrypt certificate needs no client settings. To trust a private certificate authority, give the client its TLS options:
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+
+<Tab value="Ruby">
+
+```ruby
+Anway.configure do |config|
+  config.url = 'tcp+tls://:change-me@jobs.example.com:7419'
+  config.tls = { ca_file: 'ca.pem' }
+end
+```
+
+</Tab>
+
+<Tab value="Go">
+
+`ClientOptions.TLS` takes a `*tls.Config` from `crypto/tls`.
+
+```go
+authority, err := os.ReadFile("ca.pem")
+if err != nil {
+	return err
+}
+
+pool := x509.NewCertPool()
+pool.AppendCertsFromPEM(authority)
+
+client, err := anway.Open("tcp+tls://:change-me@jobs.example.com:7419", anway.ClientOptions{
+	TLS: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+})
+if err != nil {
+	return err
+}
+
+defer client.Close()
+```
+
+</Tab>
+
+<Tab value="Node.js">
+
+The `tls` option takes `node:tls` options.
+
+```ts
+import { readFileSync } from 'node:fs';
+
+import Anway from '@anway/client';
+
+const client = new Anway.Client({
+  url: 'tcp+tls://:change-me@jobs.example.com:7419',
+  tls: { ca: readFileSync('ca.pem') },
+});
+```
+
+</Tab>
+
+</Tabs>
+
+## Caddy
+
+Standard Caddy proxies HTTP, and the work protocol is raw TCP. Caddy needs the `caddy-l4` plugin, which requires a custom build. Caddy then ends TLS, renews the certificate, and forwards the traffic to `127.0.0.1:7419`.
+
+This setup is not tested. Use it only if the host already runs Caddy.
+
+## Test status
+
+<Callout type="warn" title="Test TLS with your client">
+The server test suite covers TLS with the Go client only. Test `tcp+tls` with the Ruby and Node.js clients before you use them in production.
+</Callout>

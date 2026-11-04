@@ -1,0 +1,198 @@
+---
+title: Queues
+description: Name queues, set the order in which a worker fetches them, pause them, and limit them with throttles.
+---
+
+A queue holds the jobs that wait for a worker. Use more than one queue to keep urgent work apart from slow work, or to send jobs to a worker in another app.
+
+## Push to a queue
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.push('image.resize', [42], queue: 'media')
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("image.resize", []any{42}, anway.Options{Queue: "media"})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.push(new Anway.Job('image.resize', [42], { queue: 'media' }));
+```
+
+</Tab>
+</Tabs>
+
+A job with no queue goes to `default`.
+
+## Names
+
+- A queue name has 1 to 255 characters: letters, digits, `.`, `_`, and `-`.
+- You do not create a queue. A queue exists when the first job enters it.
+- Inside a queue, jobs wait in FIFO order: the oldest job comes out first.
+
+## Fetch order
+
+A worker fetches from a list of queues. The server checks the queues in the given order, and gives the oldest job of the first queue that has a job. So the first queue has the highest priority. A job in a later queue waits while an earlier queue has jobs.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```yaml title="config/anway.yml"
+queues: [critical, mailers, default]
+```
+
+```bash
+bundle exec anway -q critical,mailers,default
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{
+	Queues: []string{"critical", "mailers", "default"},
+})
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const worker = new Anway.Worker({ queues: ['critical', 'mailers', 'default'] });
+```
+
+</Tab>
+</Tabs>
+
+The Ruby worker also accepts weights. With weights, the worker makes a new random order for each fetch, and a queue with a higher weight comes first more often. A list without weights uses strict order.
+
+```yaml title="config/anway.yml"
+queues:
+  - [critical, 4]
+  - [mailers, 2]
+  - [default, 1]
+```
+
+The queues that each worker fetches:
+
+| Client | Queues |
+|---|---|
+| Ruby | The `queues` list or `-q`. Without them: the queues of the job classes and of their subscriptions, and `default`. |
+| Go | `Queues`, plus the queue of each `On` declaration that sets a queue or has topics. With no queue at all: `default`. |
+| Node.js | `queues` (default `['default']`), plus the queue of each `on` declaration that sets a queue or has topics. |
+
+A queue with no worker is not an error. Its jobs wait until a worker fetches from it.
+
+## Pause and resume
+
+A paused queue keeps its jobs and accepts new pushes, but `FETCH` skips it. The pause is saved on disk, so it stays after a server restart.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.client.pause_queues('media')
+
+Anway.client.resume_queues('media')
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+if err := client.PauseQueues(ctx, "media"); err != nil {
+	return err
+}
+
+return client.ResumeQueues(ctx, "media")
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.pauseQueues('media');
+
+await client.resumeQueues('media');
+```
+
+</Tab>
+</Tabs>
+
+- `*` in place of the names selects all known queues.
+- The **Queues** page of the [web console](/docs/server/console) also pauses, resumes, and clears a queue.
+- A paused queue counts in the backlog for [autoscale](/docs/concepts/autoscale#things-to-know).
+
+## Remove a queue
+
+`remove_queues` (Ruby), `RemoveQueues` (Go), and `removeQueues` (Node.js) delete the queues and all their waiting jobs. This cannot be undone.
+
+## Queue sizes
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.client.queue_sizes
+# => {"default" => 3, "media" => 12}
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+sizes, err := client.QueueSizes(ctx)
+if err != nil {
+	return err
+}
+
+log.Println(sizes["media"])
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const sizes = await client.queueSizes();
+
+console.warn(sizes.media);
+```
+
+</Tab>
+</Tabs>
+
+## Throttles
+
+A throttle limits how many jobs of a queue run at the same time. Use it for a queue that calls a slow API or a small database. Set throttles in a YAML file in the server `CONF_DIR`:
+
+```yaml title="conf.d/throttles.yml"
+throttles:
+  api: { concurrency: 4, timeout: 60 }
+  bulk: { worker: 5, timeout: 60 }
+```
+
+| Key | Meaning |
+|---|---|
+| `concurrency` | The most jobs of the queue that run at once, for all workers together. |
+| `worker` | The most jobs of the queue that run at once in each worker. |
+| `timeout` | The most seconds that a running job holds its place in the throttle. The default is 60. |
+
+- A full throttle makes `FETCH` skip to the next queue in the list.
+- The server checks throttled queues before the other queues of a fetch, and keeps the order inside each group.
+- `SIGHUP` reloads the files. The **Schedules** page of the web console shows the throttles and the places in use.
+
+See [Configuration](/docs/server/configuration) for `CONF_DIR`.

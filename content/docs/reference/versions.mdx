@@ -1,0 +1,121 @@
+---
+title: Versions
+description: The shared version number of the server and the clients, and the option names that every client takes.
+---
+
+The Anway server and the official clients share one version number. The current release is 0.5.1 for all of them. This page explains the version rule, the language versions that each client supports, and the option names that all clients share.
+
+## One version number
+
+Since 0.5.1, the server and the official clients have the same version number. Each release of one repository is also a release of the others, with the same number, even when one of them has no change.
+
+| Package | Install |
+|---|---|
+| Server | Binaries on [GitHub releases](https://github.com/thadeu/anway/releases), or the image `ghcr.io/thadeu/anway` |
+| Ruby | `bundle add anway` |
+| Go | `go get github.com/thadeu/anway-go` |
+| Node.js and Bun | `pnpm add @anway/client` |
+
+- A client and a server with the same version are tested together. The client CI and release workflows run against the server release of the same version.
+- The platform gems of `anway` contain the server of the same version.
+- A client also works with an older server. But a feature that needs a new command, such as `PUSHB`, needs a server that has it.
+
+For a pair that was tested together, use the same version for the server and the clients.
+
+### Features that need a newer server
+
+| Feature | Server |
+|---|---|
+| [Topics](/docs/concepts/topics) | v0.3.0 or later |
+| [Bulk push](/docs/concepts/bulk-push) (`PUSHB`) | v0.3.2 or later |
+| The input contract below | v0.4.0 or later of the clients. The server does not change for it. |
+
+## Language versions
+
+The clients support only modern language versions. There is no support for old runtimes.
+
+| Repository | Content | Language floor | Package |
+|---|---|---|---|
+| `anway` | Server | Go 1.27 | One binary |
+| `anway-go` | Go client and worker | Go 1.26 | Module `github.com/thadeu/anway-go` |
+| `anway-ruby` | Ruby client and worker, Rails integration | Ruby 3.4, Rails 8.1 | Gem `anway` |
+| `anway-js` | Client and worker for Node.js and Bun | Node 24, Bun 1.2 | Package `@anway/client`, ESM and CommonJS |
+
+## Input contract
+
+Since version 0.4.0, every client takes the same option names when an app declares or pushes a job. The client translates them to the fields of the protocol, so the server does not change.
+
+| Contract key | Wire field | Note |
+|---|---|---|
+| `event` | `jobtype` | The name of what the job handles. In Ruby, the default is the class name. In Go and Node.js, it is the first argument of `on`. |
+| `queue` | `queue` | Default `default`. |
+| `retry` | `retry` | Default 25 (server). `0` discards at the first failure. `-1` goes to Dead at once. |
+| `reserve_for` | `reserve_for` | Seconds. |
+| `backtrace` | `backtrace` | Lines. |
+| `at` | `at` | A time to run later. For a push, not for a declaration. |
+| `unique_for` | `custom.unique_for` | Seconds. |
+| `unique_until` | `custom.unique_until` | `success` or `start`. |
+| `expires_in` | `custom.expires_in` | Seconds. |
+| `expires_at` | `custom.expires_at` | A time. |
+| `track` | `custom.track` | `true` sends `1`. |
+| `on_dead` | `custom.on_dead` | `{event, queue}`. Its `event` goes to `jobtype`. |
+| `custom` | `custom` | The app's own keys only. The keys above win over a key with the same name here. |
+| `topics` | One `SUBSCRIBE` for each topic | With `event` as the job type, and the `queue`, `retry`, and `reserve_for` of the declaration. For a declaration, not for a push. |
+
+Names follow the style of each language: `reserve_for` in Ruby, `reserveFor` in Node.js, `ReserveFor` in Go. Durations are seconds in Ruby and Node.js, and `time.Duration` in Go.
+
+### Several option sets
+
+A declaration can take more than one option set: repeated `anway_options` calls in Ruby, or more than one options argument in Go and Node.js. The sets merge in order, with the same rules in every client:
+
+- A single value, such as `queue` or `retry`: the last set that has it wins.
+- `topics`: the topics of all sets add up, in order, with no duplicates.
+- `custom`: the hashes merge, and a later key wins.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+class WelcomeJob
+  include Anway::Worker
+
+  anway_options event: 'email.welcome', retry: 5
+  anway_options topics: %w[user.created], queue: 'mailers'
+
+  def perform(user_id)
+    # ...
+  end
+end
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+defaults := anway.Options{Queue: "mail", Retry: anway.Int(3)}
+
+job, err := anway.NewJob("email.send", []any{"a@b.com"}, defaults, anway.Options{Retry: anway.Int(10)})
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const realtime: Anway.Options = { queue: 'realtime', retry: 3 };
+
+worker.on('chat.broadcast', broadcast, realtime, { topics: ['chat.message'] });
+```
+
+</Tab>
+</Tabs>
+
+### Declare and push in each language
+
+| Language | Declaration | Push |
+|---|---|---|
+| Ruby | `anway_options event:, queue:, topics:, ...` in an `Anway::Worker` class. You can call it more than once. A subclass inherits all options except `event` and `topics`. | `perform_async`, `perform_in`, `perform_at`, and `set(...)` with the same keys. `Anway::Job.new(event, args, **options)`. |
+| Go | `worker.On(event, handler, options ...Options)` | `anway.NewJob(event, args, options ...Options)` |
+| Node.js | `worker.on(event, handler, ...options)` | `new Anway.Job(event, args, options)` |
+
+- A worker has one handler for each event. A second `on` for the same event is an error. For several flows on one topic, use several events, each subscribed to the topic.
+- `client.subscribe` and `client.unsubscribe` take `topic`, `queue`, and `event`. `subscribe` also takes `retry` and `reserve_for`.

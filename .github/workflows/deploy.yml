@@ -1,0 +1,64 @@
+name: deploy
+
+# The landing page and the docs, on Cloudflare as a Worker with static assets.
+#
+# A push to main that changes the site publishes it. A pull request only
+# builds, so a broken page shows before the merge. `workflow_dispatch` is the
+# manual button, for a redeploy with no change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one in flight: wrangler uploading a
+# half-finished set of files is worse than waiting.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pnpm before Node: the pnpm cache of setup-node needs pnpm, and pnpm
+      # reads its version from `packageManager` in package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # `output: 'export'` writes a static site to out/.
+      - name: Build
+        run: pnpm build
+
+      - name: Deploy to Cloudflare
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          # The token needs Account > Workers Scripts: Edit and
+          # Zone > Workers Routes: Edit on clowk.in.
+          command: deploy

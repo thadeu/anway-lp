@@ -1,0 +1,136 @@
+---
+title: Go topics
+description: Publish one event to many queues, and subscribe Go workers to topics.
+---
+
+A topic sends one event to many queues. `client.Publish` makes one job for each subscription of the topic, in one transaction. Each copy is a normal job in the queue of its subscriber, with its own retries. For the model, see [topics](/docs/concepts/topics).
+
+Publish one `chat.message` event:
+
+```go
+published, err := client.Publish(ctx, "chat.message", []any{map[string]any{"room": "general", "body": "hi"}}, anway.PublishOptions{
+	ID: "msg-42",
+})
+if err != nil {
+	return err
+}
+
+log.Printf("event %s made %d jobs", published.Event, published.Jobs)
+```
+
+Three apps subscribe to `chat.message`, each with its own event and queue. Each app declares its subscription in its worker. In this short example, one worker has all three:
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{})
+topics := []string{"chat.message"}
+
+worker.On("chat.broadcast", broadcast, anway.Options{Queue: "realtime", Topics: topics})
+worker.On("chat.store", store, anway.Options{Queue: "cassandra", Topics: topics})
+worker.On("chat.notify", notify, anway.Options{Queue: "push", Retry: anway.Int(5), Topics: topics})
+
+return worker.Run(ctx)
+```
+
+The publish above then makes three jobs: one in each of the `realtime`, `cassandra`, and `push` queues.
+
+## Subscribe in a worker
+
+Put the topics in the `Topics` option of `worker.On`. For each topic, the worker records one subscription with these values:
+
+| Subscription field | Value |
+|---|---|
+| Topic | The topic name. |
+| Event | The event of the declaration. Each copy is a job with this event. |
+| Queue | The `Queue` of the declaration, or `default`. |
+| Retry | The `Retry` of the declaration. |
+| ReserveFor | The `ReserveFor` of the declaration. |
+
+- `Run` sends `SUBSCRIBE` for each subscription before its first fetch. `Run` returns an error when a subscription fails.
+- The worker fetches from the queue of each declaration that has topics.
+- `Run` sends the subscriptions again at each start, so the worker code sets them. A second `SUBSCRIBE` with the same topic, queue, and event keeps one subscription, with the new `Retry` and `ReserveFor`.
+- The server saves subscriptions on disk. A copy goes to the queue also when the subscriber app is down. The copy waits in the queue until a worker fetches it.
+- To send one topic to two flows in one app, declare two events, each with the topic. A worker has one handler for each event.
+
+An event that is published before a subscription exists does not reach that subscription.
+
+## Publish
+
+`client.Publish(ctx, topic, args, options)` sends an event to every subscription of the topic. Every copy gets the same args.
+
+```go
+window := 10 * time.Minute
+
+published, err := client.Publish(ctx, "product.created", []any{item}, anway.PublishOptions{
+	ID:        item.ID,
+	UniqueFor: &window,
+	Custom:    map[string]any{"source": "catalog"},
+})
+if err != nil {
+	return err
+}
+
+if published.Duplicate {
+	log.Printf("product %s was already published", item.ID)
+}
+```
+
+All fields of `anway.PublishOptions` are optional.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `ID` | `string` | The server makes one | The event id. |
+| `UniqueFor` | `*time.Duration` | One day (server) | With an `ID`, a second event with the same topic and id in this time makes no job. A zero value turns the check off. The server maximum is 30 days. |
+| `Custom` | `map[string]any` | None | Keys that go to each copy. The server adds `topic` and `event` to them. |
+
+`Publish` returns an `anway.Published`:
+
+| Field | Meaning |
+|---|---|
+| `Event` | The event id: your `ID`, or the id that the server made. |
+| `Jobs` | The number of copies, one for each subscription. |
+| `Duplicate` | `true` when the same topic and id were published in `UniqueFor`. Then no job was made. |
+
+Use a stable id, such as the id of the record, when the same publish can run twice, for example after a network error. Without an `ID`, the server does no duplicate check.
+
+An event with no subscription is not lost. It goes to the Dead set as one job, and `Jobs` is 0. A requeue of that dead job publishes the event again to the subscriptions of that moment.
+
+### Idempotent handlers
+
+Each copy is delivered at least once. The server adds the event id to the custom hash of each copy, so use it as the key for idempotence:
+
+```go
+worker.On("chat.store", func(ctx context.Context, job *anway.Job) error {
+	eventID, _ := job.Custom["event"].(string)
+
+	return store(ctx, eventID, job.Args)
+}, anway.Options{Queue: "cassandra", Topics: []string{"chat.message"}})
+```
+
+## Subscribe from any app
+
+`client.Subscribe` and `client.Unsubscribe` change subscriptions without a worker.
+
+```go
+err := client.Subscribe(ctx, anway.Subscription{
+	Topic:      "chat.message",
+	Queue:      "audit",
+	Event:      "chat.audit",
+	Retry:      anway.Int(3),
+	ReserveFor: 60,
+})
+```
+
+- `Subscribe` is idempotent. A second call with the same topic, queue, and event sets the new `Retry` and `ReserveFor`.
+- `ReserveFor` in a `Subscription` is an `int` in seconds, not a `time.Duration`.
+
+## Unsubscribe
+
+`client.Unsubscribe(ctx, topic, queue, event)` removes one subscription. A missing subscription is not an error.
+
+```go
+if err := client.Unsubscribe(ctx, "chat.message", "audit", "chat.audit"); err != nil {
+	return err
+}
+```
+
+The server keeps a subscription until you remove it. When you remove `Topics` from a declaration, the worker stops sending `SUBSCRIBE`, but the old subscription stays. Call `Unsubscribe` to remove it.

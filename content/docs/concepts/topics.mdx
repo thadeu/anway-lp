@@ -1,0 +1,223 @@
+---
+title: Topics
+description: Send one event to many queues, as with SNS and SQS.
+---
+
+A topic sends one event to many apps. You publish the event one time. The server makes one job for each subscription of the topic, in the queue of that subscription. Use a topic when one event must start many flows, such as a chat message that must go to the browsers, to a database, and to push notifications.
+
+```text
+publisher               server, in one transaction                     subscribers
+---------               --------------------------                     -----------
+PUBLISH chat.message ─┬─> queue realtime,  job chat.broadcast ──> app A: realtime
+                      ├─> queue cassandra, job chat.store     ──> app B: Cassandra
+                      └─> queue push,      job chat.notify    ──> app C: push notifications
+```
+
+Each copy is a normal job in the queue of its subscriber, with its own retries and Dead set. If one subscriber app is down for ten minutes, its copies wait in its queue, and the other subscribers are not blocked.
+
+## Subscribe
+
+A worker declares its subscriptions with the `topics` option. When the worker starts, it sends `SUBSCRIBE` for each topic, before its first fetch. The copies get the event of the declaration as their job type, and its `queue`, `retry`, and `reserve_for`.
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+class BroadcastMessage
+  include Anway::Worker
+
+  anway_options event: 'chat.broadcast', topics: %w[chat.message], queue: 'realtime'
+
+  def perform(message)
+    # ...
+  end
+end
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{})
+topics := []string{"chat.message"}
+
+worker.On("chat.broadcast", broadcast, anway.Options{Queue: "realtime", Topics: topics})
+worker.On("chat.store", store, anway.Options{Queue: "cassandra", Topics: topics})
+worker.On("chat.notify", notify, anway.Options{Queue: "push", Retry: anway.Int(5), Topics: topics})
+
+return worker.Run(ctx)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const worker = new Anway.Worker();
+
+worker.on('chat.broadcast', async job => await broadcast(job.args[0]), {
+  queue: 'realtime',
+  topics: ['chat.message'],
+});
+
+worker.on('chat.store', async job => await store(job.custom?.event, job.args[0]), {
+  queue: 'cassandra',
+  retry: 10,
+  topics: ['chat.message', 'chat.edit'],
+});
+
+await worker.run();
+```
+
+</Tab>
+</Tabs>
+
+The worker also fetches from the queue of each subscription. In Ruby, a worker with an explicit queue list logs a warning for a subscription queue that is not in the list.
+
+### Subscription rules
+
+- A subscription is a topic, a queue, and a job type (the event).
+- The server saves subscriptions on disk. A copy goes to the queue also while the subscriber app is down.
+- `SUBSCRIBE` is idempotent. The same topic, queue, and event keep one subscription. A second `SUBSCRIBE` sets its new `retry` and `reserve_for`.
+- One app can subscribe two events to the same topic, for two flows. A worker has one handler for each event, so use one event for each flow.
+- A topic has at most 256 subscriptions.
+- An event that you publish before a subscription exists does not reach that subscription.
+
+### Subscribe from any app
+
+The client can also change subscriptions directly:
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+client = Anway.client
+
+client.subscribe('chat.message', queue: 'realtime', event: 'chat.broadcast', retry: 3, reserve_for: 60)
+client.unsubscribe('chat.message', queue: 'realtime', event: 'chat.broadcast')
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+err := client.Subscribe(ctx, anway.Subscription{
+	Topic:      "chat.message",
+	Queue:      "realtime",
+	Event:      "chat.broadcast",
+	Retry:      anway.Int(3),
+	ReserveFor: 60,
+})
+if err != nil {
+	return err
+}
+
+return client.Unsubscribe(ctx, "chat.message", "realtime", "chat.broadcast")
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+await client.subscribe({ topic: 'chat.message', queue: 'realtime', event: 'chat.broadcast', retry: 3, reserveFor: 60 });
+await client.unsubscribe({ topic: 'chat.message', queue: 'realtime', event: 'chat.broadcast' });
+```
+
+</Tab>
+</Tabs>
+
+`unsubscribe` of a subscription that does not exist is not an error. In Go, `ReserveFor` of a `Subscription` is in seconds.
+
+## Publish
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.publish('chat.message', [{ 'room' => 'general', 'body' => 'hi' }], id: 'msg-42')
+# => #<data Anway::Client::Published event="msg-42", jobs=3, duplicate=false>
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+published, err := client.Publish(ctx, "chat.message", []any{map[string]any{"room": "general", "body": "hi"}}, anway.PublishOptions{ID: "msg-42"})
+if err != nil {
+	return err
+}
+
+log.Println(published.Jobs)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const published = await client.publish('chat.message', [{ room: 'general', body: 'hi' }], { id: 'msg-42' });
+
+console.warn(published);
+// { event: 'msg-42', jobs: 3, duplicate: false }
+```
+
+</Tab>
+</Tabs>
+
+The reply has three fields:
+
+| Field | Meaning |
+|---|---|
+| `event` | The event id. |
+| `jobs` | The number of copies: one for each subscription. |
+| `duplicate` | `true` when the server ignored the event as a duplicate. |
+
+- `args` is an array, as in a job. Every copy gets the same args.
+- Each copy has a new `jid`, and the queue, job type, `retry`, and `reserve_for` of its subscription.
+- `custom` goes to each copy. The server adds `topic` and `event` to it, so a handler knows which event it runs.
+- The server writes all copies in one transaction. After the reply, every copy survives `kill -9`. A crash before the reply leaves no copy.
+
+## Dedup by event id
+
+Give each event an `id` to make a publish safe to repeat. A second publish of the same topic and id within `unique_for` seconds makes no job, and the reply has `duplicate: true`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `id` | Made by the server, such as `evt-…` | The event id. Without an id, there is no dedup check. |
+| `unique_for` | 86,400 (one day) | Seconds of the dedup window. The maximum is 30 days. `0` turns the check off. |
+| `custom` | None | Keys that go to `custom` of each copy. |
+
+In Ruby and Node.js, `unique_for` (`uniqueFor`) is in seconds. In Go, `PublishOptions.UniqueFor` is a `*time.Duration`.
+
+```ruby
+Anway.client.publish('chat.message', [{ 'body' => 'hi' }], id: 'msg-42', unique_for: 3600, custom: { 'source' => 'web' })
+```
+
+## An event with no subscription
+
+An event with no subscription is not lost. It goes to the Dead set as one job, and the reply has `jobs: 0`.
+
+| Field | Value |
+|---|---|
+| `jobtype` | The topic name |
+| `queue` | `topic` |
+| `custom` | `topic`, `event`, and `unrouted: true` |
+| `failure` | `NoSubscriber`: "no subscription for topic …" |
+
+A requeue of this job, from `mutate` or from the web console, publishes the event again to the subscriptions of that moment, and removes the dead job. If there is still no subscription, the event stays in the Dead set. See [Retries](/docs/concepts/retries#the-dead-set).
+
+## Delivery
+
+- Each copy is delivered at least once, as any job. Make the handler idempotent. `custom.event` is a good key for that.
+- Copies in different queues have no order between them. Each queue keeps its own order.
+- There are no filters. Each subscriber gets every event of the topic, and skips the ones it does not need in its own code.
+
+## Names
+
+Topic names follow the queue name rule: letters, digits, `.`, `_`, and `-`, up to 255 characters. A topic exists as soon as a subscription or an event uses it.
+
+## In the web console
+
+The **Topics** page lists each topic with its subscriptions. Each subscription shows its queue, job type, `retry`, `reserve_for`, and the connected workers that fetch from its queue. A subscription with no worker still gets its copies, but they wait in its queue until a worker fetches from it. The page marks such a subscription.
+
+The Topics page has no counts of its own, because each copy is a job. The Jobs and Queues pages count them.
+
+See the topic pages of each client: [Ruby](/docs/ruby/topics), [Go](/docs/go/topics), and [Node.js](/docs/nodejs/topics).

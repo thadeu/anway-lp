@@ -1,0 +1,119 @@
+---
+title: Jobs
+description: The fields of a job, and the states that a job goes through.
+---
+
+A job is one unit of work: a type, a list of args, and options. This page shows how to make a job, which fields it has, and what happens to it after a push.
+
+## Make a job
+
+<Tabs items={['Ruby', 'Go', 'Node.js']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.push('report.build', [42], queue: 'reports', retry: 5)
+
+job = Anway::Job.new('report.build', [42], queue: 'reports', retry: 5)
+
+Anway.client.push(job)
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+job, err := anway.NewJob("report.build", []any{42}, anway.Options{
+	Queue: "reports",
+	Retry: anway.Int(5),
+})
+if err != nil {
+	return err
+}
+
+return client.Push(ctx, job)
+```
+
+</Tab>
+<Tab value="Node.js">
+
+```ts
+const job = new Anway.Job('report.build', [42], { queue: 'reports', retry: 5 });
+
+await client.push(job);
+```
+
+</Tab>
+</Tabs>
+
+The first argument is the **event**. It goes to the server as the job type (`jobtype`), and it tells the worker which handler to run. In a Ruby `Anway::Worker` class, the default event is the class name.
+
+The client makes a new `jid` for each job. Args must be JSON types, because a worker in another language reads them. In Ruby, hash keys must be strings.
+
+## Fields
+
+The server reads these fields of a job. The client sets them from the options that you give. See the option names of each language in [Versions](/docs/reference/versions#input-contract).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `jid` | Made by the client | The job id, 1 to 256 bytes. It must be unique. A push with a `jid` that exists fails. |
+| `jobtype` | Required | The event. The worker runs the handler for it. |
+| `args` | Required | A JSON array. `null` becomes `[]`. |
+| `queue` | `default` | The queue name. See [Queues](/docs/concepts/queues). |
+| `reserve_for` | 1800 | Seconds that a worker can hold the job. The minimum is 60. |
+| `at` | Now | A time to run the job later. See [Scheduled jobs](/docs/concepts/scheduled-jobs). |
+| `retry` | 25 | Retries after a failure. `0` discards the job at the first failure. `-1` sends it to the Dead set at once. See [Retries](/docs/concepts/retries). |
+| `backtrace` | 0 | Lines of the error backtrace to keep. The Ruby `Anway::Worker` default is 30. |
+| `created_at` | Server time | When the job was made. |
+| `custom` | None | A JSON hash for your own keys, and for the options of some features. |
+| `enqueued_at` | Set by the server | When the job entered its queue. |
+| `failure` | Set by the server | Data of the last failure. |
+
+### Custom keys with a meaning
+
+The server reads some keys in `custom`. The clients set them from options, so you do not write them by hand.
+
+| Key | Option | Effect |
+|---|---|---|
+| `unique_for`, `unique_until` | `unique_for`, `unique_until` | Block a duplicate job. See [Unique jobs](/docs/concepts/unique-jobs). |
+| `expires_in`, `expires_at` | `expires_in`, `expires_at` | Discard a job that waits too long. See [Unique jobs](/docs/concepts/unique-jobs#expiring-jobs). |
+| `on_dead` | `on_dead` | Push a notice job when this job dies. See [Retries](/docs/concepts/retries#death-hook). |
+| `bid` | None | Add the job to a batch. See [Batches](/docs/concepts/batches). |
+| `track` | `track` | Record the progress of the job. See [Batches](/docs/concepts/batches#job-tracking). |
+
+The keys from options win over a key with the same name in your own `custom` hash.
+
+## States
+
+```text
+PUSH --> SCHEDULED (future "at")
+  |          |
+  |          v  time arrives
+  +----> ENQUEUED <-------------- RETRIES
+             |                       ^  |
+             | FETCH                 |  | no retries remain
+             v                       |  v
+          WORKING ---- FAIL or ------+  DEAD
+             |         reservation
+             | ACK     expires
+             v
+          removed
+```
+
+| State | Meaning |
+|---|---|
+| Scheduled | The job has an `at` time in the future. It waits until that time. |
+| Enqueued | The job waits in its queue for a worker. |
+| Working | A worker fetched the job and holds a reservation for `reserve_for` seconds. |
+| Retries | The job failed. It waits for its next attempt. |
+| Dead | The job failed and has no retries left. It stays until you requeue, kill, or discard it. |
+
+- `ACK` removes the job. The server does not keep finished jobs.
+- `FAIL` and an expired reservation follow the same path.
+- An `ACK` or `FAIL` for a job that is not in Working returns an error. This can occur after the reservation expired, or after an operator killed the running job.
+- The first fetch of a job has no `failure` field.
+
+## Delivery
+
+Delivery is at least once. A worker can get the same job again, for example when it crashed before its `ACK`, or when its reservation expired. Make each handler idempotent: a second run must not do the work two times.
+
+Set `reserve_for` above the longest time that a job can run. If a job runs longer, the server gives it to another worker while the first one still runs it.
