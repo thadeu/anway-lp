@@ -7,6 +7,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 import { Logo } from '@/components/brand/logo';
+import { VersionBadge } from '@/components/brand/version-badge';
 import { PageIcon, SectionIcon } from '@/components/docs/sidebar-icons';
 import { site } from '@/lib/site';
 import type { SidebarSection } from '@/lib/sidebar';
@@ -56,11 +57,15 @@ export function DocsSidebar({ sections, commit }: Props) {
 
       <aside className={asideClass} aria-label="Docs">
         <div className="flex h-14 flex-none items-center justify-between border-b border-line pl-5 pr-3">
-          <Link href="/" className="flex items-center gap-2.5" aria-label="Anway home">
-            <Logo height={20} />
+          <div className="flex items-center gap-2.5">
+            <Link href="/" className="flex items-center gap-2.5" aria-label="Anway home">
+              <Logo height={20} />
 
-            <span className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-sub">docs</span>
-          </Link>
+              <span className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-sub">docs</span>
+            </Link>
+
+            <VersionBadge />
+          </div>
 
           <button
             type="button"
@@ -91,11 +96,15 @@ export function DocsSidebar({ sections, commit }: Props) {
 function MobileBar({ onOpen }: { onOpen: () => void }) {
   return (
     <div className="docs-mobile-bar fixed inset-x-0 top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-navy/95 pl-4 pr-2 pt-[env(safe-area-inset-top)] backdrop-blur lg:hidden">
-      <Link href="/" className="flex items-center gap-2.5" aria-label="Anway home">
-        <Logo height={20} />
+      <div className="flex items-center gap-2.5">
+        <Link href="/" className="flex items-center gap-2.5" aria-label="Anway home">
+          <Logo height={20} />
 
-        <span className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-sub">docs</span>
-      </Link>
+          <span className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-sub">docs</span>
+        </Link>
+
+        <VersionBadge />
+      </div>
 
       <div className="flex items-center">
         <SearchIconButton />
@@ -226,11 +235,9 @@ function SidebarLink({ item, active, activeRef }: LinkProps) {
 }
 
 function SidebarFooter({ commit }: { commit?: string }) {
-  const version = commit ? `v${site.version} · ${commit}` : `v${site.version}`;
-
   return (
     <div className="flex-none border-t border-line px-5 py-3">
-      <p className="mb-2 font-mono text-[11px] text-sub">{version}</p>
+      {commit && <p className="mb-2 font-mono text-[11px] text-sub">build {commit}</p>}
 
       <div className="flex items-center gap-4">
         <a href={site.github} className="flex items-center gap-2 text-[13px] text-sub hover:text-ink" aria-label="Anway on GitHub">

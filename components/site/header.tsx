@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
 import { Logo } from '@/components/brand/logo';
+import { VersionBadge } from '@/components/brand/version-badge';
 import { site } from '@/lib/site';
 
 const links = [
@@ -56,9 +57,13 @@ export function Header() {
     <>
       <header className={barClass}>
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 md:px-6">
-          <Link href="/" aria-label="Anway home" className="rounded-xs">
-            <Logo height={22} />
-          </Link>
+          <div className="flex items-center gap-2.5">
+            <Link href="/" aria-label="Anway home" className="rounded-xs">
+              <Logo height={22} />
+            </Link>
+
+            <VersionBadge />
+          </div>
 
           <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
             {links.map(link => (

@@ -1,3 +1,7 @@
+// The current server version. The server and all clients share one version
+// number, so this is also the client version. Change it at each release.
+const version = '0.5.1';
+
 // One place for the names and links that the landing page, the docs, and the
 // metadata share.
 export const site = {
@@ -7,5 +11,6 @@ export const site = {
     'Anway is an open source background job server. Ruby, Go, and Node.js apps push jobs to one server, and workers in any of them run the jobs.',
   github: 'https://github.com/thadeu/anway',
   clowk: 'https://clowk.in',
-  version: '0.5.1',
+  version,
+  release: `https://github.com/thadeu/anway/releases/tag/v${version}`,
 };

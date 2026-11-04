@@ -25,6 +25,10 @@ Open http://localhost:3000.
 - Components with no import: `Callout`, `Cards`, `Card`, `Tabs`, `Tab`, `Steps`, `Step`.
 - Take every fact from the server and client repositories. The internal docs of the server are in `docs/dev/` of `thadeu/anway`.
 
+## Version
+
+The landing page and the docs show the current server version, with a link to its release notes. It is `version` in `lib/site.ts`. Change it at each release of the server.
+
 ## Build
 
 ```bash

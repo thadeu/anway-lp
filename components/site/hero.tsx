@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { ReleaseLine } from '@/components/brand/version-badge';
 import { CopyCommand } from '@/components/site/copy-command';
 import { RouteMap } from '@/components/site/route-map';
 import { site } from '@/lib/site';
@@ -8,7 +9,9 @@ export function Hero() {
   return (
     <section className="mx-auto w-full max-w-6xl px-4 pb-16 pt-32 md:px-6 md:pb-24 md:pt-40">
       <div className="max-w-3xl">
-        <h1 className="font-display text-[40px] font-semibold leading-[1.04] tracking-[-0.035em] text-ink md:text-[64px]">
+        <ReleaseLine />
+
+        <h1 className="mt-6 font-display text-[40px] font-semibold leading-[1.04] tracking-[-0.035em] text-ink md:text-[64px]">
           Background jobs for every language in your stack
         </h1>
 
