@@ -47,6 +47,79 @@
   --color-fd-ring: #3ddc97;
 }
 
+/* docs: the geometry of the custom sidebar, as in the Blackevin docs. One
+   width for two readers: the sidebar itself and the offset of the layout. */
+:root {
+  --docs-sidebar-width: min(22vw, 272px);
+  --docs-content-width: 900px;
+}
+
+/* Fumadocs' own sidebar is off, so its width is zero and the space comes
+   back as padding on the left. */
+.docs-layout {
+  --fd-sidebar-width: 0px;
+  --fd-toc-width: 0px;
+  --fd-layout-width: 100%;
+  --fd-layout-offset: 0px;
+  --fd-page-width: var(--docs-content-width);
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+/* On a phone the top bar of DocsSidebar is 56px tall. The page and the
+   table of contents bar start below it. */
+@media (max-width: 1023px) {
+  .docs-layout {
+    --fd-nav-height: calc(56px + env(safe-area-inset-top));
+    padding-top: var(--fd-nav-height);
+  }
+}
+
+/* On a wide screen the layout takes the whole width right of the sidebar,
+   so the grid gutters collapse and the page starts at the sidebar. The table
+   of contents column is the rest, so the anchors sit beside the text. */
+@media (min-width: 1024px) {
+  .docs-layout {
+    --fd-toc-width: max(0px, calc(100% - var(--docs-content-width)));
+    padding-inline-start: var(--docs-sidebar-width);
+  }
+}
+
+/* The page stays at the sidebar, not in the middle of its column. min-width
+   0 lets a long code line scroll in its block, not widen the page. */
+.docs-layout #nd-page {
+  margin-inline: 0;
+  max-width: var(--docs-content-width);
+  min-width: 0;
+}
+
+.docs-layout #nd-toc {
+  width: 268px;
+}
+
+.docs-layout [data-fd-doc] pre {
+  overflow-x: auto;
+}
+
+/* docs code on a phone: a smaller font, so more of each line shows */
+@media (max-width: 639px) {
+  .docs-layout [data-fd-doc] pre {
+    font-size: 12px;
+  }
+}
+
+.docs-sidebar {
+  width: 100vw;
+  max-width: 300px;
+}
+
+@media (min-width: 1024px) {
+  .docs-sidebar {
+    width: var(--docs-sidebar-width);
+    max-width: none;
+  }
+}
+
 /* base */
 html {
   background: var(--color-navy);
