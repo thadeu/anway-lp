@@ -1,0 +1,79 @@
+---
+title: Debugging jobs
+description: See the jobs on the server from the terminal and the Rails console, and find the log lines of one job.
+---
+
+When a job "did not run", two questions come first: is it waiting, running, retrying or dead, and with which error? And which log lines are its own? Anway answers both without a browser.
+
+## From the terminal
+
+`bin/anway jobs` reads the server's HTTP API with the settings of your app. It starts nothing.
+
+```
+$ bin/anway jobs
+waiting      3   oldest 4s   mail.send
+working      1   EmitInvoiceJob on mbp:84600
+retries      2   EmitInvoiceJob ×2   Net::ReadTimeout: execution expired
+scheduled    0
+dead         0
+```
+
+One set, filtered by a part of the job type or of the Active Job class:
+
+```
+$ bin/anway jobs --set retries --type EmitInvoice
+JID       TYPE            QUEUE    TRY  NEXT    ERROR
+a1b2c3d4  EmitInvoiceJob  default  2    in 38s  Net::ReadTimeout: execution expired
+```
+
+One job, with its error and backtrace:
+
+```
+$ bin/anway job a1b2c3d4
+EmitInvoiceJob (Active Job, wrapper Anway::ActiveJobWrapper)
+state     retries (try 2, next run 16:42:10)
+queue     default
+args      ["15063a22-f96b-41d9-b744-411a0ba69833"]
+error     Net::ReadTimeout: execution expired
+          app/services/nfse/sefin_client.rb:88:in 'post'
+          app/jobs/emit_invoice_job.rb:14:in 'perform'
+          (8 lines more, --full shows all)
+```
+
+| Option | Meaning |
+|---|---|
+| `--set` | `waiting`, `working`, `retries`, `scheduled`, `dead`, or `queue:<name>` |
+| `--type` | A part of the job type or of the Active Job class |
+| `--queue`, `--limit` | One queue; at most N jobs (20) |
+| `--full` | The whole backtrace |
+| `--json` | The API answer, for scripts and agents |
+
+A finished job is not kept, so `anway job` of a finished job says `not found: it finished, or it never existed` and exits 1.
+
+## From the Rails console
+
+```ruby
+Anway.jobs
+Anway.jobs(set: :retries, type: "EmitInvoiceJob").first(5)
+Anway.job(EmitInvoiceJob.perform_later(invoice.id).provider_job_id)
+```
+
+`Anway.job` returns an `Anway::JobInfo` (state, args, try, worker, error with backtrace), or `nil` when the job finished. In tests with `Anway::Testing.fake!`, both read the fake jobs.
+
+## Find the log lines of one job
+
+While a job runs, every line of `Rails.logger`, including Active Record and HTTP clients, carries the job:
+
+```
+[anway EmitInvoiceJob jid=a1b2c3d4 try=2] Invoice Load (0.4ms) SELECT "invoices".* ...
+anway done   EmitInvoiceJob jid=a1b2c3d4 312ms
+anway failed EmitInvoiceJob jid=a1b2c3d4 try=2 Net::ReadTimeout: execution expired (retry) 5012ms
+```
+
+`grep jid=a1b2c3d4 log/development.log` shows one run; `grep EmitInvoiceJob` shows every run. Set `log_tags: false` in `config/anway.yml` to turn the tags off.
+
+## Where the API is
+
+An embedded server opens its HTTP API on `127.0.0.1:7420`, and keeps its random token in its data folder, readable only by your user. For a server that runs apart, set `ANWAY_API_URL` and `ANWAY_WEB_TOKEN` (or `console.api` and `console.token` in `config/anway.yml`).
+
+Failures keep the first 30 lines of the backtrace. A job sets another number with `backtrace`, and `-1` keeps none.

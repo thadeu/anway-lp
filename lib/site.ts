@@ -1,6 +1,6 @@
 // The current server version. The server and all clients share one version
 // number, so this is also the client version. Change it at each release.
-const version = '0.5.1';
+const version = '0.5.3';
 
 // One place for the names and links that the landing page, the docs, and the
 // metadata share.

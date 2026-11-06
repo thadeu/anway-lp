@@ -45,6 +45,7 @@ production:
 | `autoscale` | Hash | Off | `max`, and `min` if you want. Both are positive integers, and `min` is at most `max`. |
 | `require` | String | `config/environment.rb` | The file that loads the jobs. |
 | `url` | String | None | The url of a server that runs apart. With a url, the app does not run the server. |
+| `log_tags` | Boolean | `true` | Tag each log line of a job with its class, jid and try. See [Debugging jobs](/docs/ruby/debugging). |
 
 ```yaml title="config/anway.yml"
 concurrency: 10
@@ -74,10 +75,10 @@ production:
 | `bind` | `127.0.0.1:7419` | The address of the embedded server. Use `0.0.0.0:7419` and a `password` for workers on other hosts. |
 | `data` | `storage/anway` | The data folder of the embedded server. |
 | `password` | None | The server password. |
-| `web` | Off | The address of the HTTP API, for the web console. |
-| `web_token` | A random token | The token of the HTTP API. Without it, the token changes at each start. Set it to call the API from scripts. |
+| `web` | `127.0.0.1:7420` for an embedded server, else off | The address of the HTTP API, for the web console and `anway jobs`. |
+| `web_token` | A random token | The token of the HTTP API. Without it, the embedded server makes one and keeps it in `data/web_token`, readable only by your user, so every process of the app uses the same. |
 
-When the console runs next to an embedded server, `web` is on by default, on `127.0.0.1:7420`. Refer to [Run the server](/docs/server) and [HTTP API](/docs/server/http-api).
+An embedded server opens its HTTP API on the loopback by default. Refer to [Run the server](/docs/server) and [HTTP API](/docs/server/http-api).
 
 ## Console
 
