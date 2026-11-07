@@ -11,6 +11,7 @@ export const site = {
     'Anway is an open source background job server. Ruby, Go, and Node.js apps push jobs to one server, and workers in any of them run the jobs.',
   github: 'https://github.com/thadeu/anway',
   clowk: 'https://clowk.in',
+  cloud: 'https://cloud.anway.clowk.in',
   version,
   release: `https://github.com/thadeu/anway/releases/tag/v${version}`,
 };

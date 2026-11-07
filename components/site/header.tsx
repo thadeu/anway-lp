@@ -72,6 +72,13 @@ export function Header() {
               </a>
             ))}
 
+            <a
+              href={site.cloud}
+              className="ml-2 rounded-xs border border-line px-3.5 py-2 text-[14px] font-medium text-ink hover:bg-panel2"
+            >
+              Sign in
+            </a>
+
             <Link
               href="/docs/getting-started"
               className="ml-2 rounded-xs bg-green px-3.5 py-2 text-[14px] font-medium text-navy hover:bg-[#5ce6aa]"
@@ -130,10 +137,18 @@ function MobileMenu({ onClose }: { onClose: () => void }) {
         </a>
       ))}
 
+      <a
+        href={site.cloud}
+        onClick={onClose}
+        className="mt-4 rounded-xs border border-line px-4 py-3 text-center text-[16px] font-medium text-ink"
+      >
+        Sign in
+      </a>
+
       <Link
         href="/docs/getting-started"
         onClick={onClose}
-        className="mt-4 rounded-xs bg-green px-4 py-3 text-center text-[16px] font-medium text-navy"
+        className="mt-2 rounded-xs bg-green px-4 py-3 text-center text-[16px] font-medium text-navy"
       >
         Get started
       </Link>

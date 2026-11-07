@@ -21,9 +21,16 @@ export function Hero() {
         </p>
 
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <a
+            href={site.cloud}
+            className="rounded-xs bg-green px-5 py-3 text-center text-[15px] font-medium text-navy hover:bg-[#5ce6aa]"
+          >
+            Start free on Anway Cloud
+          </a>
+
           <Link
             href="/docs/getting-started"
-            className="rounded-xs bg-green px-5 py-3 text-center text-[15px] font-medium text-navy hover:bg-[#5ce6aa]"
+            className="rounded-xs border border-line2 px-5 py-3 text-center text-[15px] font-medium text-ink hover:bg-panel2"
           >
             Read the quickstart
           </Link>
@@ -35,6 +42,8 @@ export function Hero() {
             View on GitHub
           </a>
         </div>
+
+        <p className="mt-3 text-[13px] text-sub">A Hobby server on Anway Cloud is free forever. No card needed.</p>
 
         <div className="mt-6 max-w-2xl">
           <CopyCommand command="docker run -p 7419:7419 -v anway-data:/data ghcr.io/thadeu/anway" />

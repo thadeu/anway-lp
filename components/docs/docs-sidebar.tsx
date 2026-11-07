@@ -250,6 +250,10 @@ function SidebarFooter({ commit }: { commit?: string }) {
         <Link href="/" className="text-[13px] text-sub hover:text-ink">
           anway.clowk.in
         </Link>
+
+        <a href={site.cloud} className="ml-auto text-[13px] font-medium text-green hover:text-ink">
+          Sign in
+        </a>
       </div>
     </div>
   );
