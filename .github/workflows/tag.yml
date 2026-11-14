@@ -1,0 +1,79 @@
+name: Tag
+
+# Tags main, publishes a GitHub release and deploys the site once the build of
+# main passes, when a commit since the last tag has a subject like (the most
+# recent one wins, merged commits count).
+#
+#   tag(patch): fix a typo
+#   tag(minor): a new feature
+#   tag(major): a breaking change
+#   tag(0.3.0): an exact version
+
+on:
+  workflow_run:
+    workflows: [ deploy ]
+    types: [ completed ]
+    branches: [ main ]
+
+concurrency:
+  group: tag-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: write
+
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Read tag from the commit subjects
+        id: target
+        run: |
+          last=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+
+          target=$(git log --format=%s "${last:+$last..}HEAD" | sed -nE 's/^tag\((patch|minor|major|v?[0-9]+\.[0-9]+\.[0-9]+)\): .+/\1/p' | head -n1)
+
+          echo "value=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push the tag
+        id: tag
+        if: steps.target.outputs.value != ''
+        run: |
+          version=$(script/tag "${{ steps.target.outputs.value }}" HEAD | cut -d' ' -f1)
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release
+        if: steps.tag.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "$VERSION^" 2>/dev/null || true)
+
+          git log --no-merges --format='- %s (%h)' "${previous:+$previous..}$VERSION" > notes.md
+
+          gh release create "$VERSION" --title "$VERSION" --notes-file notes.md --verify-tag
+
+  deploy:
+    needs: tag
+    if: needs.tag.outputs.version != ''
+
+    permissions:
+      contents: read
+
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ref: ${{ needs.tag.outputs.version }}
+    secrets: inherit

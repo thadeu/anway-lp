@@ -2,19 +2,28 @@ name: deploy
 
 # The landing page and the docs, on Cloudflare as a Worker with static assets.
 #
-# A push to main that changes the site publishes it. A pull request only
-# builds, so a broken page shows before the merge. `workflow_dispatch` is the
-# manual button, for a redeploy with no change.
+# A push to main and a pull request only build, so a broken page shows before
+# a release. A v* tag publishes: the Tag workflow calls this one with the tag
+# it pushed (a tag(patch|minor|major): commit), and a tag pushed by hand
+# (make tag patch) starts it on its own. `workflow_dispatch` is the manual
+# button, for a redeploy with no change.
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: The tag to publish
+        required: true
+        type: string
 
 # One deploy at a time, and never cancel one in flight: wrangler uploading a
 # half-finished set of files is worse than waiting.
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -27,6 +36,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       # pnpm before Node: the pnpm cache of setup-node needs pnpm, and pnpm
       # reads its version from `packageManager` in package.json.
@@ -53,7 +64,7 @@ jobs:
         run: pnpm build
 
       - name: Deploy to Cloudflare
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: inputs.ref != '' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
