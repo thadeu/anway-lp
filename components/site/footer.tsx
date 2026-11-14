@@ -32,7 +32,7 @@ export function Footer() {
     <footer className="border-t border-line pb-[env(safe-area-inset-bottom)]">
       <div className="mx-auto grid w-full max-w-6xl grid-cols-2 gap-10 px-4 py-14 md:grid-cols-[1.4fr_1fr_1fr_1fr] md:px-6">
         <div className="col-span-2 flex flex-col gap-4 md:col-span-1">
-          <a href={site.clowk} aria-label="Clowk">
+          <a href={site.clowkPage} aria-label="anway on clowk.in">
             <img src="/brand/lockup-clowk-on-dark.svg" alt="Anway by Clowk" width={186} height={25} />
           </a>
 
