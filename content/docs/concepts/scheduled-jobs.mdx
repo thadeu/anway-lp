@@ -6,7 +6,7 @@ description: Run a job at a later time with at, or push jobs on a cron schedule.
 Anway has two ways to run work later:
 
 - **`at`:** push one job now, and the server runs it at the time that you give.
-- **Cron:** the server pushes a job on a repeating schedule, from its YAML settings.
+- **Cron:** the server pushes a job on a repeating schedule, from its YAML settings or from the cron that your app declares.
 
 ## Run a job later
 
@@ -125,8 +125,96 @@ cron:
 
 The example uses `expires_in: 60`. If its job waits more than 60 seconds in the queue, the server discards it at fetch. See [Expiring jobs](/docs/concepts/unique-jobs#expiring-jobs).
 
-The **Schedules** page of the [web console](/docs/server/console) shows each cron entry, with its job, queue, and the time of the next run. See [Configuration](/docs/server/configuration) for `CONF_DIR`.
+The **Schedules** page of the [web console](/docs/server/console) shows each cron entry, with its job, queue, source, and the time of the next run. See [Configuration](/docs/server/configuration) for `CONF_DIR`.
+
+## Schedules from the app
+
+Since 0.6.0, your app can declare its cron in its own code or config, as Solid Queue recurring tasks do. You do not need access to the server files, so this also works on Anway Cloud. The worker sends the entries to the server when it starts, and the server keeps them on disk.
+
+<Tabs items={['Ruby', 'Go']}>
+<Tab value="Ruby">
+
+```ruby
+class RefillCredits
+  include Anway::Worker
+
+  anway_options event: 'credits.refill', queue: 'default', retry: 3, cron: '0 0 * * *'
+
+  def perform
+    # ...
+  end
+end
+```
+
+Or in `config/anway.yml`, with the same keys as a server YAML file:
+
+```yaml title="config/anway.yml"
+tag: shop
+
+cron:
+  - schedule: "0 6 * * *"
+    job:
+      type: report.daily
+      queue: reports
+      args: [7]
+```
+
+`cron` takes a string or an array of strings. The worker sends the entries of the job classes and of the file together.
+
+</Tab>
+<Tab value="Go">
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{Tag: "shop"})
+
+worker.On("credits.refill", refill, anway.Options{
+	Queue: "default",
+	Retry: anway.Int(3),
+	Cron:  []string{"0 0 * * *"},
+})
+
+return worker.Run(ctx)
+```
+
+</Tab>
+</Tabs>
+
+- Each schedule makes one cron entry. Its job has the event as its type, and the queue, retry, and reserve_for of the declaration.
+- The entries belong to the **tag** of the app, such as `shop`. A worker with cron entries and no tag does not start. In Ruby, set `tag` in `config/anway.yml`, `ANWAY_TAG`, or `--tag`. In Go, set `WorkerOptions.Tag`.
+- At each start, the worker sends all its entries in one `SCHEDULE`. The server replaces all entries of the tag, so an entry that you remove from the code goes away.
+- A worker with no cron entries sends nothing. To remove the last entry of a tag, call `unschedule` once.
+- All processes with one tag must declare the same entries, because the last `SCHEDULE` wins.
+- A bad schedule, or an entry with no job type, is an error, and the entries on the server do not change.
+- The server runs the entries of its YAML files and of all tags together. `SIGHUP` reloads only the YAML files.
+- The entries stay after a server restart, and they do not need a connected worker.
+
+You can also change the entries of a tag from any process, such as the Rails console or a deploy script:
+
+<Tabs items={['Ruby', 'Go']}>
+<Tab value="Ruby">
+
+```ruby
+Anway.schedule('shop', [{ schedule: '0 0 * * *', job: { type: 'credits.refill', queue: 'default' } }])
+Anway.unschedule('shop')
+Anway.cron # the entries that the worker of this app sends at start
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+err := client.Schedule(ctx, "shop", []anway.CronEntry{
+	{Schedule: "0 0 * * *", Job: anway.CronJob{Event: "credits.refill", Queue: "default"}},
+})
+
+err = client.Unschedule(ctx, "shop")
+```
+
+</Tab>
+</Tabs>
+
+The **Schedules** page of the web console shows `conf.d` for an entry of a server YAML file, and the tag for an entry of an app. `GET /api/v1/schedules` has the same `source` and `tag`.
 
 <Callout type="info" title="Moving from Solid Queue">
-Tasks in Rails `recurring.yml` do not move to Anway by themselves. Move them to the server cron.
+Move each task of Rails `recurring.yml` to `anway_options cron:` in its job class, or to the `cron` key of `config/anway.yml`.
 </Callout>
