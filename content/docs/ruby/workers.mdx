@@ -73,7 +73,7 @@ end
 | `on_dead` | Hash | None | `{ event:, queue: }`. When the job dies, the server pushes a job of this event. |
 | `custom` | Hash | None | The keys of your app. A key above wins over a key with the same name here. |
 | `topics` | Array | `[]` | One topic subscription for each name. Only in `anway_options`. Refer to [Topics](/docs/ruby/topics). |
-| `cron` | String or Array | `[]` | One cron entry for each schedule, in UTC. Only in `anway_options`. Needs a `tag`. Refer to [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). Since 0.6.0. |
+| `cron` | String or Array | `[]` | One cron entry for each schedule, in UTC. Only in `anway_options`. Needs a `tag`. Refer to [Cron](/docs/ruby/cron). Since 0.6.0. |
 
 The gem sends `unique_for`, `unique_until`, `expires_in`, `expires_at`, `track`, and `on_dead` in the `custom` field of the job. Refer to [Unique jobs](/docs/concepts/unique-jobs) and [Retries](/docs/concepts/retries) for the server rules.
 

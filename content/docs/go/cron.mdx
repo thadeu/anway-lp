@@ -1,0 +1,40 @@
+---
+title: Go cron
+description: Declare cron schedules in a Go worker. The Anway server runs them, also on Anway Cloud.
+---
+
+Since v0.6.0, an app declares its cron entries in its own code, as Solid Queue recurring tasks do. The server saves them for the tag of the app, and keeps them after a restart. It runs them with the cron entries of its own config. Schedules use UTC.
+
+Declare the entries in the worker, with the `Cron` option and a `Tag`:
+
+```go
+worker := anway.NewWorker("", anway.WorkerOptions{Tag: "shop"})
+
+worker.On("credits.refill", refill, anway.Options{Queue: "billing", Retry: anway.Int(3), Cron: []string{"0 0 * * *"}})
+worker.On("report.daily", report, anway.Options{Cron: []string{"0 6 * * *", "0 18 * * *"}})
+
+return worker.Run(ctx)
+```
+
+- `Run` sends all entries of the worker in one `SCHEDULE` with its `Tag`, before its first fetch. Each job has the event as its type, and the `Queue`, `Retry`, and `ReserveFor` of the declaration.
+- The server replaces all entries of the tag. So an entry that you remove from the code goes away at the next start.
+- A worker with cron entries and no `Tag` does not start: `Run` returns an error. A default tag could join the entries of two apps on one server.
+- A worker with no entries sends no `SCHEDULE`. So to remove the last entry of a tag, call `client.Unschedule(ctx, "shop")` once.
+- All processes with one tag must declare the same entries, because the last `SCHEDULE` wins.
+- The worker also fetches from the queue of each cron job.
+
+Change the entries of a tag from any app, for example from a deploy script:
+
+```go
+err := client.Schedule(ctx, "shop", []anway.CronEntry{
+	{Schedule: "0 0 * * *", Job: anway.CronJob{Event: "credits.refill", Queue: "billing", Retry: anway.Int(3)}},
+})
+```
+
+- `CronJob` has the keys of a cron entry in the server config: `Event` (sent as `type`), `Queue`, `Args`, `Retry`, `ReserveFor` in seconds, and `Custom`.
+- `Schedule` replaces all entries of the tag. No entries removes the tag.
+- A bad schedule, or an entry with no event, is an error, and nothing changes.
+- `client.Unschedule(ctx, tag)` removes all entries of the tag. A missing tag is not an error.
+- `GET /api/v1/schedules` on the server shows each entry with `source` `client` and its tag.
+
+For the model and the server rules, see [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). The server and the [web console](/docs/server/console) show each entry with its source and tag.

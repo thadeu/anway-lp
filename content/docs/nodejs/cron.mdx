@@ -1,0 +1,45 @@
+---
+title: Node.js cron
+description: Declare cron schedules in a Node.js or Bun worker. The Anway server runs them, also on Anway Cloud.
+---
+
+Since v0.6.0, an app declares its cron entries in its own code, as Solid Queue recurring tasks do. The server saves them for the tag of the app, and keeps them after a restart. It runs them with the cron entries of its own config. Schedules use UTC.
+
+Declare the entries in the worker, with the `cron` key of `on` and a `tag`:
+
+```ts
+const worker = new Anway.Worker({ tag: 'shop' });
+
+worker.on('credits.refill', refill, { queue: 'billing', retry: 3, cron: '0 0 * * *' });
+worker.on('report.daily', report, { cron: ['0 6 * * *', '0 18 * * *'] });
+
+await worker.run();
+```
+
+- `cron` takes a string or an array of strings. Each schedule makes one entry. Its job has the event as its type, and the `queue`, `retry`, and `reserveFor` of the declaration.
+- When `run` starts, the worker sends all its entries in one `SCHEDULE` with its `tag`, before its first fetch.
+- The server replaces all entries of the tag. So an entry that you remove from the code goes away at the next start.
+- A worker with cron entries and no `tag` does not start: `run` rejects with an `Error`. A default tag could join the entries of two apps on one server.
+- A worker with no entries sends no `SCHEDULE`. So to remove the last entry of a tag, call `client.unschedule('shop')` once.
+- All processes with one tag must declare the same entries, because the last `SCHEDULE` wins.
+- The worker also fetches from the queue of each cron job.
+- A bad schedule rejects `run` with a `ServerError`, and the entries on the server do not change.
+
+Change the entries of a tag from any app, for example from a deploy script:
+
+```ts
+const client = new Anway.Client();
+
+await client.schedule('shop', [
+  { schedule: '0 0 * * *', job: { event: 'credits.refill', queue: 'billing', retry: 3 } },
+  { schedule: '0 6 * * *', job: { event: 'report.daily', args: [7] } },
+]);
+```
+
+- `job` has the keys of a cron entry in the server config: `event`, `queue`, `args`, `retry`, `reserveFor` in seconds, and `custom`. `event` goes out as `type`, and `type` is the same key.
+- `schedule(tag, entries)` replaces all entries of the tag. No entries removes the tag.
+- A bad schedule, or an entry with no event, rejects with a `ServerError`, and nothing changes. Args must be JSON types.
+- `client.unschedule(tag)` removes all entries of the tag. A missing tag is not an error.
+- `GET /api/v1/schedules` on the server shows each entry with `source` `client` and its tag.
+
+For the model and the server rules, see [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). The server and the [web console](/docs/server/console) show each entry with its source and tag.

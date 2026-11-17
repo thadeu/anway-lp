@@ -1,0 +1,55 @@
+---
+title: Cron
+description: Declare cron schedules in a Ruby job class or in config/anway.yml. The Anway server runs them, also on Anway Cloud.
+---
+
+Since 0.6.0, the app declares its cron entries in its code or in `config/anway.yml`, as Solid Queue recurring tasks do. The server keeps them for the tag of the app, also after a restart, and runs them with the cron entries of its own conf.d. You do not need access to the server files. Schedules use UTC.
+
+Declare a schedule in a job class:
+
+```ruby title="app/jobs/refill_credits.rb"
+class RefillCredits
+  include Anway::Worker
+
+  anway_options event: 'credits.refill', queue: 'default', retry: 3, cron: '0 0 * * *'
+
+  def perform
+    # ...
+  end
+end
+```
+
+Or in `config/anway.yml`, in the format of the cron entries of the server conf.d:
+
+```yaml title="config/anway.yml"
+tag: shop
+
+cron:
+  - schedule: "0 6 * * *"
+    job:
+      type: report.daily
+      queue: reports
+      args: [7]
+```
+
+- `cron` takes a string or an array of strings. Each schedule makes one entry. Its job has the `event` of the class as its type, and the `queue`, `retry`, and `reserve_for` of the class. A job class has no args, so give args in `config/anway.yml`.
+- A YAML entry has `schedule`, and `job` with `type`, `queue`, `args`, `retry`, `reserve_for`, and `custom`. The section of an environment replaces the `cron` list at the top.
+- When it starts, the worker sends the entries of the job classes and of the file in one `SCHEDULE`, with the `tag` of `config/anway.yml`, `ANWAY_TAG`, or `--tag`. The server replaces all entries of the tag, so an entry that you remove from the code goes away at the next start.
+- **A tag is required.** With cron entries and no tag, `bin/anway` stops at start with an error. The app folder, which is the default tag in the console, is not used, because two apps can have the same folder name, such as `/rails` in Docker, and one tag would then join their entries.
+- A worker with no cron entries sends no `SCHEDULE`, so it does not remove the entries that another process sent. To remove the last entry, run `Anway.unschedule('shop')` once, for example in the Rails console.
+- All processes with one tag must declare the same entries, because the last `SCHEDULE` wins. In a Rails app, every process loads all job classes, so this is true.
+- Without a queue list, the worker also fetches the queues of the cron jobs.
+- A bad schedule or an entry with no job type stops the worker at start with `Anway::ServerError`, and the entries on the server do not change.
+- The console of the server shows each entry on the Schedules page, with its source and tag.
+
+The same operations work from any process, such as the Rails console. They use the connection of `Anway.client`:
+
+```ruby
+Anway.schedule('shop', [{ schedule: '0 0 * * *', job: { type: 'credits.refill', queue: 'default' } }])
+Anway.unschedule('shop')
+Anway.cron # => the entries that the worker of this app sends at start
+```
+
+`client.schedule(tag, entries)` and `client.unschedule(tag)` are the same commands on an `Anway::Client`. In an entry, `job: { event: }` is the same as `job: { type: }`. No entries removes the tag, and a missing tag is not an error for `unschedule`.
+
+For the model and the server rules, see [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). The server and the [web console](/docs/server/console) show each entry with its source and tag.

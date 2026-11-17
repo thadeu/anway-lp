@@ -2,6 +2,7 @@
   "title": "Go",
   "pages": [
     "workers",
-    "topics"
+    "topics",
+    "cron"
   ]
 }
