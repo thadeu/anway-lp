@@ -108,10 +108,22 @@ end
 | Jobs | Running and waiting jobs, with filters and pages. Retries, scheduled jobs, and dead jobs, grouped by cause. | Kill a running job. Run, kill, or discard a group. |
 | Workers | Worker processes, runtime, threads, state, and last beat | Change the threads or the autoscale of a worker |
 | Topics | Each topic, its subscriptions, and the workers that fetch from each subscription queue | |
-| Schedules | Cron entries with the next run, and throttles | |
+| Schedules | Cron entries, grouped by app, with a readable schedule, the last run, the next run, and the last 8 runs. Throttles. | Run an entry now, pause and resume it, and remove the entries of an app with no worker. Since 0.7.0. |
 | Components (`/ui`) | Each design system component of the console, with working examples | |
 
 A worker shows as `hostname:pid`, with its tag. A topic subscription with no worker shows **No worker**: its copies wait in the queue until a worker fetches from it.
+
+## Schedules
+
+The Schedules page shows each cron entry of the server, from the `conf.d` files and from the apps. See [Scheduled jobs](/docs/concepts/scheduled-jobs#in-the-console).
+
+- **Stats:** the entries, the next run, failing entries (the last run failed), runs that run now, and paused entries.
+- **Readable schedules:** `0 9 * * 1-5` shows as "Monday to Friday at 09:00 UTC", with the expression under it, and a fixed time also in your time zone. "How to read a schedule" explains the five fields.
+- **Search and filters:** search by job type, a chip for each source, a status filter (Failing, Running, Paused), and By app or One list. Sort by job, last run, and next run.
+- **Apps:** each app shows its workers online. An app with entries and no worker shows in amber, with the time that a worker was last seen, and **Remove its entries**.
+- **Each entry:** the last run (Done, Failed, Running, Queued, or Never ran), the next run, **Run now**, and a pause switch. A click shows the next 5 runs, the job, the last 8 runs, and the error of the last failure.
+
+Run now, pause, and the runs need server 0.7.0. With an older server, the page says so, and shows the entries and their next run.
 
 ## Live updates
 

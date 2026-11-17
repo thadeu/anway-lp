@@ -125,7 +125,7 @@ cron:
 
 The example uses `expires_in: 60`. If its job waits more than 60 seconds in the queue, the server discards it at fetch. See [Expiring jobs](/docs/concepts/unique-jobs#expiring-jobs).
 
-The **Schedules** page of the [web console](/docs/server/console) shows each cron entry, with its job, queue, source, and the time of the next run. See [Configuration](/docs/server/configuration) for `CONF_DIR`.
+The **Schedules** page of the [web console](/docs/server/console) shows each cron entry, with its job, queue, source, the time of the next run, and its last runs. See [In the console](#in-the-console), and [Configuration](/docs/server/configuration) for `CONF_DIR`.
 
 ## Schedules from the app
 
@@ -214,6 +214,17 @@ err = client.Unschedule(ctx, "shop")
 </Tabs>
 
 The **Schedules** page of the web console shows `conf.d` for an entry of a server YAML file, and the tag for an entry of an app. `GET /api/v1/schedules` has the same `source` and `tag`.
+
+## In the console
+
+Since 0.7.0, the **Schedules** page of the [web console](/docs/server/console) can act on each cron entry:
+
+- **Pause:** the switch of an entry stops its runs. Green means that the entry runs on its schedule. The server keeps the pause on disk, apart from the entries, so a restart and a deploy of the app do not resume it. While an entry is paused, its times pass and do not run later. When the app changes a paused entry, the old pause shows as stale, and you can clear it.
+- **Run now:** pushes one job of the entry at once, with the same job type, queue, and args. The schedule does not change. Its job id starts with `cron-manual-`.
+- **History:** the page shows the last run of each entry, and a click shows the last 8 runs, the error of the last failure, and the next 5 runs. The server keeps the runs on disk.
+- **Apps with no worker:** an app with entries and no connected worker shows in amber, with the time that a worker was last seen. **Remove its entries** does what `UNSCHEDULE` does.
+
+The [HTTP API](/docs/server/http-api#schedules) has the same actions.
 
 <Callout type="info" title="Moving from Solid Queue">
 Move each task of Rails `recurring.yml` to `anway_options cron:` in its job class, or to the `cron` key of `config/anway.yml`.
