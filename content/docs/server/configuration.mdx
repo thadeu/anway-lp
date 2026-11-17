@@ -113,6 +113,7 @@ Each item of `cron` pushes one job on a schedule.
 - A time that the server misses while it is down does not run later.
 - Each job gets a new id that starts with `cron-`.
 - With more than one server, each server pushes the job. Run one server only.
+- An app can also declare its cron entries in its own code, with no access to the server files, for example on Anway Cloud. See [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). `SIGHUP` reloads only the entries of the files; the entries of the apps stay.
 
 ### Throttles
 
