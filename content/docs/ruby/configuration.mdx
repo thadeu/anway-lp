@@ -41,11 +41,12 @@ production:
 | `timeout` | Number | `25` | Seconds for jobs to finish at a stop. |
 | `labels` | List | `[]` | Worker labels. The gem always adds `ruby`. |
 | `hostname` | String | The machine name | The worker hostname in the console. |
-| `tag` | String | The app folder | The name of the app in the console. |
+| `tag` | String | The app folder | The name of the app in the console. Cron entries need a `tag` set here, in `ANWAY_TAG`, or with `--tag`: the app folder is not used for them. |
 | `autoscale` | Hash | Off | `max`, and `min` if you want. Both are positive integers, and `min` is at most `max`. |
 | `require` | String | `config/environment.rb` | The file that loads the jobs. |
 | `url` | String | None | The url of a server that runs apart. With a url, the app does not run the server. |
 | `log_tags` | Boolean | `true` | Tag each log line of a job with its class, jid and try. See [Debugging jobs](/docs/ruby/debugging). |
+| `cron` | List | `[]` | Cron entries of the app, in the format of the server config: `schedule`, and `job` with `type`, `queue`, `args`, `retry`, `reserve_for`, and `custom`. The worker sends them at start, with the `tag`. Refer to [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). Since 0.6.0. |
 
 ```yaml title="config/anway.yml"
 concurrency: 10

@@ -75,6 +75,8 @@ A worker can send these optional fields. The web console shows them, and the ser
 | `PUBLISHB` | A JSON array of up to 1,000 `PUBLISH` arguments | A JSON array with one `{"event","jobs","duplicate","error"}` for each event, in the same order. See [Bulk publish](/docs/concepts/topics#bulk-publish). |
 | `SUBSCRIBE` | `{"topic","queue","jobtype","retry","reserve_for"}` | `OK` |
 | `UNSUBSCRIBE` | `{"topic","queue","jobtype"}` | `OK` |
+| `SCHEDULE` | `{"tag","entries"}`: each entry is `{"schedule","job"}`, as a cron entry of the server config | `OK`. It replaces all entries of the tag. No entries removes the tag. Since 0.6.0. |
+| `UNSCHEDULE` | `{"tag"}` | `OK`. A missing tag is not an error. Since 0.6.0. |
 | `FLUSH` | None | `OK`. It deletes all data. It is off unless the server has `ALLOW_FLUSH=true`. |
 | `END` | None | `OK`, then the server closes the connection |
 
@@ -115,6 +117,10 @@ Anway adds features only as new commands and optional fields. It does not change
 ### Topics
 
 `PUBLISH`, `PUBLISHB`, `SUBSCRIBE`, and `UNSUBSCRIBE`. See [Topics](/docs/concepts/topics).
+
+### Cron from the app
+
+`SCHEDULE` and `UNSCHEDULE`. A worker with cron entries sends one `SCHEDULE` when it starts, with the tag of the app. The server saves the entries on disk and runs them with the entries of its own config. A worker with no cron entries sends no `SCHEDULE`. See [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app).
 
 ### Worker threads
 

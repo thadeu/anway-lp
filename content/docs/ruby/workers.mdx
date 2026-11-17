@@ -51,7 +51,7 @@ end
 ```
 
 - Each event has one class. Two classes with the same event raise `ArgumentError`.
-- A subclass inherits all options of its parent except `event` and `topics`.
+- A subclass inherits all options of its parent except `event`, `topics`, and `cron`.
 
 ## Options
 
@@ -73,6 +73,7 @@ end
 | `on_dead` | Hash | None | `{ event:, queue: }`. When the job dies, the server pushes a job of this event. |
 | `custom` | Hash | None | The keys of your app. A key above wins over a key with the same name here. |
 | `topics` | Array | `[]` | One topic subscription for each name. Only in `anway_options`. Refer to [Topics](/docs/ruby/topics). |
+| `cron` | String or Array | `[]` | One cron entry for each schedule, in UTC. Only in `anway_options`. Needs a `tag`. Refer to [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). Since 0.6.0. |
 
 The gem sends `unique_for`, `unique_until`, `expires_in`, `expires_at`, `track`, and `on_dead` in the `custom` field of the job. Refer to [Unique jobs](/docs/concepts/unique-jobs) and [Retries](/docs/concepts/retries) for the server rules.
 
@@ -83,7 +84,7 @@ The gem sends `unique_for`, `unique_until`, `expires_in`, `expires_at`, `track`,
 You can call `anway_options` more than once. The option sets merge in call order:
 
 - A single value, such as `queue` or `retry`: the last set that has it wins.
-- `topics`: the topics of all sets add up, in order, with no duplicates.
+- `topics` and `cron`: the values of all sets add up, in order, with no duplicates.
 - `custom`: the hashes merge, and a later key wins.
 
 ```ruby
@@ -112,7 +113,7 @@ ReportJob.anway_options
 | `perform_in(seconds, *args)` | Pushes one job that runs after this many seconds. |
 | `perform_at(time, *args)` | Pushes one job that runs at this time. |
 | `perform_bulk(args_list)` | Pushes one job for each item. Each item is the args of one job. |
-| `set(**options)` | Changes the options for one push. Takes the push keys: all keys of the table above except `event` and `topics`. |
+| `set(**options)` | Changes the options for one push. Takes the push keys: all keys of the table above except `event`, `topics`, and `cron`. |
 
 ```ruby
 WelcomeJob.perform_at(Time.now + 3600, 1)

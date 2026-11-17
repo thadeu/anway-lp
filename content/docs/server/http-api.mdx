@@ -265,10 +265,19 @@ A worker reports its threads only if its client sends them. A client that does n
 
 `GET /api/v1/schedules` returns `cron` and `throttles`:
 
-- Each cron entry has `schedule`, `jobtype`, `queue`, and `next`.
+- Each cron entry has `schedule`, `jobtype`, `queue`, `next`, and `source`.
+- `source` is `conf.d` for an entry of a YAML file in `CONF_DIR`, or `client` for an entry that an app sent with `SCHEDULE`. A `client` entry also has its `tag`.
+- The `conf.d` entries come first, in file order, then the `client` entries, by tag.
 - Each throttle has `queue`, `concurrency`, `worker`, `timeout_seconds`, and `in_use`.
 
-See [Configuration](/docs/server/configuration#yaml-settings) to set them.
+```json
+{"cron": [
+  {"schedule": "*/5 * * * *", "jobtype": "Cleanup", "queue": "ops", "next": "2026-11-17T12:05:00Z", "source": "conf.d"},
+  {"schedule": "0 0 * * *", "jobtype": "credits.refill", "queue": "default", "next": "2026-11-18T00:00:00Z", "source": "client", "tag": "shop"}
+], "throttles": []}
+```
+
+To set them: a YAML file of the server (see [Configuration](/docs/server/configuration#yaml-settings)), or the app itself (see [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app)). Since 0.6.0.
 
 ## Batches
 

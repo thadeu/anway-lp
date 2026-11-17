@@ -32,10 +32,11 @@ worker.On("report.build", buildReport, anway.Options{Queue: "reports"})
 ```
 
 - A worker has one handler for each event. A second `On` for the same event panics, as a duplicate pattern does in `net/http`.
-- `On` uses only `Queue`, `Retry`, `ReserveFor`, and `Topics`. The other fields of `anway.Options` are for a push, and have no effect in `On`.
+- `On` uses only `Queue`, `Retry`, `ReserveFor`, `Topics`, and `Cron`. The other fields of `anway.Options` are for a push, and have no effect in `On`.
 - When a declaration sets `Queue` or has `Topics`, the worker also fetches from that queue.
 - `Retry` and `ReserveFor` go to the topic subscriptions of the declaration. See [topics](/docs/go/topics).
-- You can give more than one `Options` value. They merge in order, as for a [push](/docs/go#push-options). `Topics` add up, in order, with no duplicates.
+- You can give more than one `Options` value. They merge in order, as for a [push](/docs/go#push-options). `Topics` and `Cron` add up, in order, with no duplicates.
+- `Cron` declares cron entries in UTC. The worker sends them in one `SCHEDULE` at start, and needs a `Tag`. See [Schedules from the app](/docs/concepts/scheduled-jobs#schedules-from-the-app). Since 0.6.0.
 
 The worker fetches from `Queues` and from the queues that `On` adds, in this order. Without any queue, it fetches from `default`.
 
